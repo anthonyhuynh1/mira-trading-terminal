@@ -7,22 +7,18 @@ import sys
 import warnings
 warnings.filterwarnings("ignore")
 
-from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
-                             QHBoxLayout, QSplitter, QTextEdit, QLineEdit, 
+from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
+                             QHBoxLayout, QSplitter, QTextEdit, QLineEdit,
                              QPushButton, QListWidget, QTabWidget, QLabel, QTableWidget,
                              QTableWidgetItem, QHeaderView, QComboBox)
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QUrl
 from PyQt6.QtGui import QFont, QColor
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtWebEngineCore import QWebEngineSettings
-import json
-import os
-import tempfile
 
 # Import our existing strategy code
 import strategy
 import yfinance as yf
-import pandas as pd
 import numpy as np
 from datetime import datetime
 
@@ -102,85 +98,26 @@ class ChartWidget(QWidget):
             self.update_chart(self.current_ticker, timeframe)
     
     def update_chart(self, ticker: str, timeframe: str = "1h"):
-        """Update chart using TradingView Lightweight Charts."""
-        # Map timeframe to period and interval
-        timeframe_map = {
-            "1h": ("60d", "1h"),
-            "4h": ("180d", "4h"),
-            "1d": ("1y", "1d")
+        """Update chart using TradingView's official widget for a native experience."""
+        interval_map = {
+            "1h": "60",
+            "4h": "240",
+            "1d": "1D"
         }
-        period, interval = timeframe_map.get(timeframe, ("60d", "1h"))
-        
-        # Fetch data
-        df = strategy.fetch_hourly_data(ticker, period=period, interval=interval)
-        if df.empty:
-            html = f"<html><body style='background:#131722;color:#d1d4dc;padding:20px;'><h2>No data available for {ticker}</h2></body></html>"
-            self.chart_view.setHtml(html)
-            return
-        
-        # Generate signals
-        sigs = strategy.breakout_volume_signals(df)
-        
-        # Convert data to format for TradingView (time in Unix seconds, not milliseconds)
-        def get_timestamp(dt):
-            """Convert datetime to Unix timestamp in seconds."""
-            if hasattr(dt, 'timestamp'):
-                return int(dt.timestamp())
-            return int(pd.Timestamp(dt).timestamp())
-        
-        candles = []
-        for idx, row in df.iterrows():
-            timestamp = get_timestamp(idx)
-            candles.append({
-                "time": timestamp,
-                "open": float(row["Open"]),
-                "high": float(row["High"]),
-                "low": float(row["Low"]),
-                "close": float(row["Close"]),
-                "volume": float(row["Volume"])
-            })
-        
-        # Get breakout signals
-        true_breakouts = []
-        false_breakouts = []
-        for idx in sigs.index[sigs["signal"]]:
-            if idx in df.index:
-                timestamp = get_timestamp(idx)
-                true_breakouts.append({"time": timestamp, "value": float(df.loc[idx, "Close"])})
-        
-        for idx in sigs.index[sigs["false_breakout"]]:
-            if idx in df.index:
-                timestamp = get_timestamp(idx)
-                false_breakouts.append({"time": timestamp, "value": float(df.loc[idx, "Close"])})
-        
-        # Get consolidation bands
-        cons_high = []
-        cons_low = []
-        for idx in sigs.index:
-            if idx in df.index and not pd.isna(sigs.loc[idx, "cons_high_prev"]):
-                timestamp = get_timestamp(idx)
-                cons_high.append({"time": timestamp, "value": float(sigs.loc[idx, "cons_high_prev"])})
-                cons_low.append({"time": timestamp, "value": float(sigs.loc[idx, "cons_low_prev"])})
-        
-        # Create HTML with TradingView Lightweight Charts
-        html = self.create_tradingview_chart_html(ticker, timeframe, candles, true_breakouts, false_breakouts, cons_high, cons_low)
+        interval = interval_map.get(timeframe, "60")
+        html = self.create_tradingview_widget_html(ticker, interval)
         self.chart_view.setHtml(html)
     
-    def create_tradingview_chart_html(self, ticker, timeframe, candles, true_breakouts, false_breakouts, cons_high, cons_low):
-        """Create HTML with TradingView Lightweight Charts."""
-        candles_json = json.dumps(candles)
-        true_breakouts_json = json.dumps(true_breakouts)
-        false_breakouts_json = json.dumps(false_breakouts)
-        cons_high_json = json.dumps(cons_high)
-        cons_low_json = json.dumps(cons_low)
-        
+    def create_tradingview_widget_html(self, ticker: str, interval: str) -> str:
+        """Embed TradingView Advanced Chart widget."""
+        safe_ticker = ticker.replace(" ", "")
         html = f"""
 <!DOCTYPE html>
 <html>
 <head>
     <meta charset="utf-8">
-    <title>{ticker} Chart</title>
-    <script src="https://cdn.jsdelivr.net/npm/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
+    <title>{safe_ticker} Chart</title>
+    <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
     <style>
         body {{
             margin: 0;
@@ -188,126 +125,40 @@ class ChartWidget(QWidget):
             background: #131722;
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
         }}
-        #chart {{
+        #tv_chart {{
             width: 100%;
-            height: 600px;
-        }}
-        #error {{
-            color: #ef5350;
-            padding: 20px;
-            display: none;
+            height: 640px;
         }}
     </style>
 </head>
 <body>
-    <div id="error"></div>
-    <div id="chart"></div>
-    <script>
-        // Wait for library to load
-        function initChart() {{
-            if (typeof LightweightCharts === 'undefined') {{
-                setTimeout(initChart, 100);
+    <div id="tv_chart"></div>
+    <script type="text/javascript">
+        function initTradingView() {{
+            if (typeof TradingView === 'undefined' || !TradingView.widget) {{
+                setTimeout(initTradingView, 100);
                 return;
             }}
-            
-            try {{
-                const chartContainer = document.getElementById('chart');
-                const chart = LightweightCharts.createChart(chartContainer, {{
-                    layout: {{
-                        background: {{ color: '#131722' }},
-                        textColor: '#d1d4dc',
-                    }},
-                    grid: {{
-                        vertLines: {{ color: '#2a2e39' }},
-                        horzLines: {{ color: '#2a2e39' }},
-                    }},
-                    crosshair: {{
-                        mode: LightweightCharts.CrosshairMode.Normal,
-                    }},
-                    rightPriceScale: {{
-                        borderColor: '#2a2e39',
-                    }},
-                    timeScale: {{
-                        borderColor: '#2a2e39',
-                        timeVisible: true,
-                        secondsVisible: false,
-                    }},
-                }});
-                
-                // Candlestick series
-                const candlestickSeries = chart.addCandlestickSeries({{
-                    upColor: '#26a69a',
-                    downColor: '#ef5350',
-                    borderVisible: false,
-                    wickUpColor: '#26a69a',
-                    wickDownColor: '#ef5350',
-                }});
-                
-                const candleData = {candles_json};
-                console.log('Candles count:', candleData.length);
-                console.log('First candle:', candleData[0]);
-                candlestickSeries.setData(candleData);
-                
-                // Consolidation high line
-                const consHighData = {cons_high_json};
-                if (consHighData.length > 0) {{
-                    const consHighSeries = chart.addLineSeries({{
-                        color: '#26a69a',
-                        lineWidth: 2,
-                        lineStyle: LightweightCharts.LineStyle.Dashed,
-                        title: 'Consolidation High',
-                    }});
-                    consHighSeries.setData(consHighData);
-                }}
-                
-                // Consolidation low line
-                const consLowData = {cons_low_json};
-                if (consLowData.length > 0) {{
-                    const consLowSeries = chart.addLineSeries({{
-                        color: '#ef5350',
-                        lineWidth: 2,
-                        lineStyle: LightweightCharts.LineStyle.Dashed,
-                        title: 'Consolidation Low',
-                    }});
-                    consLowSeries.setData(consLowData);
-                }}
-                
-                // True breakouts markers
-                const trueBreakoutData = {true_breakouts_json};
-                if (trueBreakoutData.length > 0) {{
-                    const trueBreakoutSeries = chart.addLineSeries({{
-                        color: '#26a69a',
-                        lineWidth: 0,
-                        pointMarkersVisible: true,
-                        pointMarkersRadius: 6,
-                        title: 'True Breakout',
-                    }});
-                    trueBreakoutSeries.setData(trueBreakoutData);
-                }}
-                
-                // False breakouts markers
-                const falseBreakoutData = {false_breakouts_json};
-                if (falseBreakoutData.length > 0) {{
-                    const falseBreakoutSeries = chart.addLineSeries({{
-                        color: '#ef5350',
-                        lineWidth: 0,
-                        pointMarkersVisible: true,
-                        pointMarkersRadius: 6,
-                        title: 'False Breakout',
-                    }});
-                    falseBreakoutSeries.setData(falseBreakoutData);
-                }}
-                
-                chart.timeScale().fitContent();
-            }} catch (error) {{
-                document.getElementById('error').style.display = 'block';
-                document.getElementById('error').innerHTML = 'Error: ' + error.message;
-                console.error('Chart error:', error);
-            }}
+            new TradingView.widget({{
+                container_id: "tv_chart",
+                autosize: true,
+                symbol: "{safe_ticker}",
+                interval: "{interval}",
+                timezone: "Etc/UTC",
+                theme: "dark",
+                style: "1",
+                backgroundColor: "#131722",
+                toolbar_bg: "#1e222d",
+                hide_side_toolbar: false,
+                hide_top_toolbar: false,
+                allow_symbol_change: true,
+                save_image: false,
+                locale: "en",
+                studies: [],
+                enable_publishing: false,
+            }});
         }}
-        
-        // Start initialization
-        initChart();
+        initTradingView();
     </script>
 </body>
 </html>
