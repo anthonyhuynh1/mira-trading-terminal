@@ -24,25 +24,32 @@ import numpy as np
 from datetime import datetime
 
 
+BASE_RADIUS = 12
+BASE_SPACING = 12
+TOUCH_TARGET = 44
+
 THEMES = {
     "dark": {
         "window_bg": "#050b18",
         "panel_bg": "#0b1222",
-        "surface": "#090f1d",
+        "surface": "#0a101f",
+        "surface_alt": "#0f1628",
         "border": "#1f2539",
-        "text": "#f4f6ff",
-        "muted": "#9aa3be",
-        "accent": "#363944",
-        "accent_hover": "#4a4d59",
+        "text": "#f5f6ff",
+        "muted": "#9da4bf",
+        "accent": "#2f3647",
+        "accent_hover": "#3f475b",
         "input_bg": "#050b17",
         "chart_theme": "dark",
         "chart_bg": "#050b18",
-        "chart_toolbar": "#050b18"
+        "chart_toolbar": "#050b18",
+        "shadow": "0 20px 55px rgba(0,0,0,0.35)"
     },
     "light": {
         "window_bg": "#f7f8fc",
         "panel_bg": "#ffffff",
         "surface": "#eef1f7",
+        "surface_alt": "#ffffff",
         "border": "#d9deeb",
         "text": "#111322",
         "muted": "#4f5b75",
@@ -51,7 +58,8 @@ THEMES = {
         "input_bg": "#ffffff",
         "chart_theme": "light",
         "chart_bg": "#ffffff",
-        "chart_toolbar": "#f7f8fc"
+        "chart_toolbar": "#f7f8fc",
+        "shadow": "0 12px 40px rgba(15,23,42,0.18)"
     }
 }
 
@@ -69,6 +77,10 @@ class ChartWidget(QWidget):
     
     def init_ui(self):
         layout = QVBoxLayout()
+        layout.setSpacing(BASE_SPACING)
+        layout.setContentsMargins(BASE_SPACING, BASE_SPACING, BASE_SPACING, BASE_SPACING)
+        layout.setSpacing(BASE_SPACING)
+        layout.setContentsMargins(BASE_SPACING, BASE_SPACING, BASE_SPACING, BASE_SPACING)
         
         # Tabs: Price Chart | Fundamentals | News
         self.tabs = QTabWidget()
@@ -76,11 +88,14 @@ class ChartWidget(QWidget):
         # Price Chart Tab - Using TradingView Lightweight Charts
         self.chart_tab = QWidget()
         chart_layout = QVBoxLayout()
+        chart_layout.setContentsMargins(0, 0, 0, 0)
+        chart_layout.setSpacing(0)
         self.chart_view = QWebEngineView()
         self.chart_view.settings().setAttribute(
             QWebEngineSettings.WebAttribute.LocalContentCanAccessRemoteUrls, True
         )
-        self.chart_view.setMinimumHeight(600)
+        self.chart_view.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.chart_view.setMinimumHeight(0)
         chart_layout.addWidget(self.chart_view)
         self.chart_tab.setLayout(chart_layout)
         
@@ -137,15 +152,18 @@ class ChartWidget(QWidget):
     <title>{safe_ticker} Chart</title>
     <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
     <style>
-        body {{
+        html, body {{
             margin: 0;
             padding: 0;
+            width: 100%;
+            height: 100%;
             background: {background};
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
         }}
         #tv_chart {{
             width: 100%;
-            height: 640px;
+            height: 100%;
+            min-height: 620px;
         }}
     </style>
 </head>
@@ -255,6 +273,8 @@ class ChatbotWidget(QWidget):
         self.input_field.returnPressed.connect(self.send_message)
         self.send_btn = QPushButton("Send")
         self.send_btn.clicked.connect(self.send_message)
+        self.input_field.setMinimumHeight(TOUCH_TARGET)
+        self.send_btn.setMinimumHeight(TOUCH_TARGET)
         input_layout.addWidget(self.input_field)
         input_layout.addWidget(self.send_btn)
         layout.addLayout(input_layout)
@@ -434,14 +454,19 @@ class ScreenerWidget(QWidget):
     
     def init_ui(self):
         layout = QVBoxLayout()
+        layout.setSpacing(BASE_SPACING)
+        layout.setContentsMargins(BASE_SPACING, BASE_SPACING, BASE_SPACING, BASE_SPACING)
         
         # Search box
         search_layout = QHBoxLayout()
+        search_layout.setSpacing(8)
         self.search_input = QLineEdit()
         self.search_input.setPlaceholderText("Search ticker...")
         self.search_input.returnPressed.connect(self.search_ticker)
         self.search_btn = QPushButton("Search")
         self.search_btn.clicked.connect(self.search_ticker)
+        self.search_btn.setMinimumHeight(TOUCH_TARGET)
+        self.search_input.setMinimumHeight(TOUCH_TARGET)
         search_layout.addWidget(self.search_input)
         search_layout.addWidget(self.search_btn)
         layout.addLayout(search_layout)
@@ -449,12 +474,15 @@ class ScreenerWidget(QWidget):
         # Quick scan button
         scan_btn = QPushButton("🔍 Scan Universe")
         scan_btn.clicked.connect(self.scan_universe)
+        scan_btn.setMinimumHeight(TOUCH_TARGET)
         layout.addWidget(scan_btn)
         
         # Ticker list
         self.ticker_list = QListWidget()
         self.ticker_list.itemDoubleClicked.connect(self.on_ticker_selected)
-        layout.addWidget(QLabel("Watchlist:"))
+        watchlist_label = QLabel("Watchlist")
+        watchlist_label.setProperty("class", "section-label")
+        layout.addWidget(watchlist_label)
         layout.addWidget(self.ticker_list)
         
         # Load default tickers
@@ -557,6 +585,9 @@ class TradingTerminal(QMainWindow):
     
     def apply_theme(self):
         theme = self.get_current_theme()
+        radius = BASE_RADIUS
+        spacing = BASE_SPACING
+        touch = TOUCH_TARGET
         stylesheet = f"""
         QMainWindow {{
             background-color: {theme['window_bg']};
@@ -570,20 +601,25 @@ class TradingTerminal(QMainWindow):
         QDockWidget {{
             background-color: {theme['panel_bg']};
             border: 1px solid {theme['border']};
+            border-radius: {radius}px;
         }}
         QDockWidget::title {{
-            background-color: {theme['surface']};
+            background-color: {theme['surface_alt']};
             color: {theme['muted']};
-            padding: 6px 10px;
+            padding: {spacing - 4}px {spacing}px;
             border-bottom: 1px solid {theme['border']};
+            font-weight: 600;
         }}
         QListWidget {{
             background-color: {theme['surface']};
             border: 1px solid {theme['border']};
-            padding: 6px;
+            padding: {spacing - 4}px;
+            border-radius: {radius}px;
         }}
         QListWidget::item {{
             padding: 6px;
+            margin-bottom: 2px;
+            border-radius: {radius - 4}px;
         }}
         QListWidget::item:selected {{
             background-color: {theme['accent']};
@@ -593,8 +629,9 @@ class TradingTerminal(QMainWindow):
             background-color: {theme['input_bg']};
             border: 1px solid {theme['border']};
             color: {theme['text']};
-            padding: 8px 10px;
-            border-radius: 8px;
+            padding: 0 {spacing}px;
+            border-radius: {radius}px;
+            min-height: {touch}px;
         }}
         QLineEdit::placeholder {{
             color: {theme['muted']};
@@ -603,9 +640,11 @@ class TradingTerminal(QMainWindow):
             background-color: {theme['accent']};
             color: {theme['text']};
             border: none;
-            border-radius: 8px;
-            padding: 10px 16px;
+            border-radius: {radius}px;
+            padding: 0 {spacing + 4}px;
             font-weight: 600;
+            min-height: {touch}px;
+            box-shadow: {theme['shadow']};
         }}
         QPushButton:hover {{
             background-color: {theme['accent_hover']};
@@ -613,7 +652,7 @@ class TradingTerminal(QMainWindow):
         QTabWidget::pane {{
             background-color: {theme['surface']};
             border: 1px solid {theme['border']};
-            border-radius: 10px;
+            border-radius: {radius + 2}px;
             margin-top: 8px;
         }}
         QTabBar::tab {{
@@ -632,29 +671,39 @@ class TradingTerminal(QMainWindow):
             background-color: {theme['surface']};
             border: 1px solid {theme['border']};
             color: {theme['text']};
-            border-radius: 10px;
-            padding: 12px;
+            border-radius: {radius + 2}px;
+            padding: {spacing}px;
         }}
         QTableWidget {{
             background-color: {theme['surface']};
             border: 1px solid {theme['border']};
             color: {theme['text']};
             gridline-color: {theme['border']};
-            border-radius: 10px;
+            border-radius: {radius + 2}px;
+        }}
+        QTableWidget::item {{
+            padding: {spacing - 4}px;
         }}
         QHeaderView::section {{
-            background-color: {theme['panel_bg']};
+            background-color: {theme['surface_alt']};
             color: {theme['muted']};
             padding: 6px;
             border: none;
         }}
         QToolBar {{
-            background: {theme['window_bg']};
+            background: {theme['surface_alt']};
             border: none;
+            padding: {spacing - 6}px {spacing}px;
         }}
         QLabel {{
             color: {theme['muted']};
             font-weight: 600;
+        }}
+        QLabel.section-label {{
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            font-size: 11px;
+            margin-top: {spacing / 2}px;
         }}
         """
         self.setStyleSheet(stylesheet)
