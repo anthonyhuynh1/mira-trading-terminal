@@ -540,7 +540,7 @@ class TradingTerminal(QMainWindow):
         toolbar.setObjectName("TopToolbar")
         
         spacer = QWidget()
-        spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         toolbar.addWidget(spacer)
         
         self.theme_button = QPushButton("☀ Light Mode")
