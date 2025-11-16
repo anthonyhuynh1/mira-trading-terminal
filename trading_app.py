@@ -547,7 +547,7 @@ class TradingTerminal(QMainWindow):
         self.theme_button.clicked.connect(self.toggle_theme)
         toolbar.addWidget(self.theme_button)
         
-        self.addToolBar(Qt.TopToolBarArea, toolbar)
+        self.addToolBar(Qt.ToolBarArea.TopToolBarArea, toolbar)
         self.toolbar = toolbar
     
     def get_current_theme(self):
