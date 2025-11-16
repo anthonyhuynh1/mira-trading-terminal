@@ -10,7 +10,7 @@ warnings.filterwarnings("ignore")
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QSplitter, QTextEdit, QLineEdit,
                              QPushButton, QListWidget, QTabWidget, QLabel, QTableWidget,
-                             QTableWidgetItem, QHeaderView, QComboBox)
+                             QTableWidgetItem, QHeaderView)
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QUrl
 from PyQt6.QtGui import QFont, QColor
 from PyQt6.QtWebEngineWidgets import QWebEngineView
@@ -29,22 +29,12 @@ class ChartWidget(QWidget):
     def __init__(self):
         super().__init__()
         self.current_ticker = None
-        self.current_timeframe = "1h"
+        self.default_interval = "60"  # TradingView interval codes (60 = 1h)
+        self.current_interval = self.default_interval
         self.init_ui()
     
     def init_ui(self):
         layout = QVBoxLayout()
-        
-        # Toolbar with timeframe selector
-        toolbar = QHBoxLayout()
-        toolbar.addWidget(QLabel("Timeframe:"))
-        self.timeframe_combo = QComboBox()
-        self.timeframe_combo.addItems(["1h", "4h", "1d"])
-        self.timeframe_combo.setCurrentText("1h")
-        self.timeframe_combo.currentTextChanged.connect(self.on_timeframe_changed)
-        toolbar.addWidget(self.timeframe_combo)
-        toolbar.addStretch()
-        layout.addLayout(toolbar)
         
         # Tabs: Price Chart | Fundamentals | News
         self.tabs = QTabWidget()
@@ -87,24 +77,14 @@ class ChartWidget(QWidget):
     def load_ticker(self, ticker: str):
         """Load and display ticker data."""
         self.current_ticker = ticker
-        self.update_chart(ticker, self.current_timeframe)
+        self.update_chart(ticker)
         self.update_fundamentals(ticker)
         self.update_news(ticker)
     
-    def on_timeframe_changed(self, timeframe: str):
-        """Handle timeframe change."""
-        self.current_timeframe = timeframe
-        if self.current_ticker:
-            self.update_chart(self.current_ticker, timeframe)
-    
-    def update_chart(self, ticker: str, timeframe: str = "1h"):
+    def update_chart(self, ticker: str, interval: str | None = None):
         """Update chart using TradingView's official widget for a native experience."""
-        interval_map = {
-            "1h": "60",
-            "4h": "240",
-            "1d": "1D"
-        }
-        interval = interval_map.get(timeframe, "60")
+        interval = interval or self.current_interval or self.default_interval
+        self.current_interval = interval
         html = self.create_tradingview_widget_html(ticker, interval)
         self.chart_view.setHtml(html)
     
@@ -471,7 +451,6 @@ class TradingTerminal(QMainWindow):
     def __init__(self):
         super().__init__()
         self.current_ticker = None
-        self.current_timeframe = "1h"  # Track current timeframe for context
         self.init_ui()
         self.apply_dark_theme()
     
@@ -479,71 +458,88 @@ class TradingTerminal(QMainWindow):
         """Apply TradingView-like dark theme."""
         self.setStyleSheet("""
             QMainWindow {
-                background-color: #1e222d;
+                background-color: #050b18;
+                color: #e7ecff;
             }
             QWidget {
-                background-color: #1e222d;
-                color: #d1d4dc;
+                background-color: #0e1427;
+                color: #e7ecff;
             }
             QListWidget {
-                background-color: #131722;
-                border: 1px solid #2a2e39;
-                color: #d1d4dc;
+                background-color: #0a1120;
+                border: 1px solid #1e2a42;
+                color: #e7ecff;
+                padding: 6px;
             }
             QListWidget::item:selected {
-                background-color: #2962ff;
+                background-color: #4f7cff;
                 color: white;
             }
             QLineEdit {
-                background-color: #131722;
-                border: 1px solid #2a2e39;
-                color: #d1d4dc;
-                padding: 5px;
+                background-color: #050b17;
+                border: 1px solid #273149;
+                color: #e7ecff;
+                padding: 8px 10px;
+                border-radius: 6px;
             }
             QPushButton {
-                background-color: #2962ff;
+                background-color: #4f7cff;
                 color: white;
                 border: none;
-                padding: 8px;
-                border-radius: 4px;
+                padding: 10px 14px;
+                border-radius: 8px;
+                font-weight: 600;
             }
             QPushButton:hover {
-                background-color: #1e53e5;
+                background-color: #3c63d6;
             }
             QTabWidget::pane {
-                background-color: #131722;
-                border: 1px solid #2a2e39;
+                background-color: #0a0f1f;
+                border: 1px solid #1d2640;
+                border-radius: 8px;
+                margin-top: 6px;
             }
             QTabBar::tab {
-                background-color: #1e222d;
-                color: #787b86;
-                padding: 8px 16px;
+                background-color: transparent;
+                color: #7f88a8;
+                padding: 10px 18px;
                 border: none;
+                font-weight: 600;
             }
             QTabBar::tab:selected {
-                background-color: #131722;
-                color: #2962ff;
-                border-bottom: 2px solid #2962ff;
+                color: #4f7cff;
+                border-bottom: 3px solid #4f7cff;
+                margin-bottom: -3px;
             }
             QTextEdit {
-                background-color: #131722;
-                border: 1px solid #2a2e39;
-                color: #d1d4dc;
+                background-color: #070d1c;
+                border: 1px solid #1d2741;
+                color: #e7ecff;
+                border-radius: 8px;
+                padding: 12px;
             }
             QTableWidget {
-                background-color: #131722;
-                border: 1px solid #2a2e39;
-                color: #d1d4dc;
-                gridline-color: #2a2e39;
+                background-color: #070d1c;
+                border: 1px solid #1d2741;
+                color: #e7ecff;
+                gridline-color: #1d2741;
+                border-radius: 8px;
             }
             QTableWidget::item {
-                padding: 5px;
+                padding: 8px;
             }
             QHeaderView::section {
-                background-color: #1e222d;
-                color: #787b86;
-                padding: 5px;
+                background-color: #0e1427;
+                color: #7f88a8;
+                padding: 6px;
                 border: none;
+            }
+            QLabel {
+                color: #7f88a8;
+                font-weight: 600;
+            }
+            QListWidget::item {
+                padding: 6px 4px;
             }
         """)
     
@@ -584,15 +580,14 @@ class TradingTerminal(QMainWindow):
     def on_ticker_selected(self, ticker: str):
         """Handle ticker selection."""
         self.current_ticker = ticker
-        self.current_timeframe = self.chart_widget.current_timeframe
         self.chart_widget.load_ticker(ticker)
-        self.chatbot.add_bot_message(f"📊 Loaded {ticker} ({self.current_timeframe}). Ask me about its signals or strategy!")
+        self.chatbot.add_bot_message(f"📊 Loaded {ticker}. Ask me about its signals or strategy!")
     
     def get_context(self) -> dict:
         """Get current context for chatbot - enhanced with more details."""
         return {
             "ticker": self.current_ticker or "N/A",
-            "timeframe": self.chart_widget.current_timeframe if hasattr(self.chart_widget, 'current_timeframe') else self.current_timeframe,
+            "timeframe": getattr(self.chart_widget, 'current_interval', self.chart_widget.default_interval),
             "timestamp": datetime.now().isoformat(),
             "chart_type": "candlestick_with_signals",
             "view": "main_chart"
