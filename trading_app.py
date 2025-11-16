@@ -117,14 +117,16 @@ class ChartWidget(QWidget):
         # Generate signals
         sigs = strategy.breakout_volume_signals(df)
         
-        # Convert data to format for TradingView
+        # Convert data to format for TradingView (time in Unix seconds, not milliseconds)
+        def get_timestamp(dt):
+            """Convert datetime to Unix timestamp in seconds."""
+            if hasattr(dt, 'timestamp'):
+                return int(dt.timestamp())
+            return int(pd.Timestamp(dt).timestamp())
+        
         candles = []
         for idx, row in df.iterrows():
-            # Handle both Timestamp and datetime objects
-            if hasattr(idx, 'timestamp'):
-                timestamp = int(idx.timestamp() * 1000)
-            else:
-                timestamp = int(pd.Timestamp(idx).timestamp() * 1000)
+            timestamp = get_timestamp(idx)
             candles.append({
                 "time": timestamp,
                 "open": float(row["Open"]),
@@ -139,18 +141,12 @@ class ChartWidget(QWidget):
         false_breakouts = []
         for idx in sigs.index[sigs["signal"]]:
             if idx in df.index:
-                if hasattr(idx, 'timestamp'):
-                    timestamp = int(idx.timestamp() * 1000)
-                else:
-                    timestamp = int(pd.Timestamp(idx).timestamp() * 1000)
+                timestamp = get_timestamp(idx)
                 true_breakouts.append({"time": timestamp, "value": float(df.loc[idx, "Close"])})
         
         for idx in sigs.index[sigs["false_breakout"]]:
             if idx in df.index:
-                if hasattr(idx, 'timestamp'):
-                    timestamp = int(idx.timestamp() * 1000)
-                else:
-                    timestamp = int(pd.Timestamp(idx).timestamp() * 1000)
+                timestamp = get_timestamp(idx)
                 false_breakouts.append({"time": timestamp, "value": float(df.loc[idx, "Close"])})
         
         # Get consolidation bands
@@ -158,10 +154,7 @@ class ChartWidget(QWidget):
         cons_low = []
         for idx in sigs.index:
             if idx in df.index and not pd.isna(sigs.loc[idx, "cons_high_prev"]):
-                if hasattr(idx, 'timestamp'):
-                    timestamp = int(idx.timestamp() * 1000)
-                else:
-                    timestamp = int(pd.Timestamp(idx).timestamp() * 1000)
+                timestamp = get_timestamp(idx)
                 cons_high.append({"time": timestamp, "value": float(sigs.loc[idx, "cons_high_prev"])})
                 cons_low.append({"time": timestamp, "value": float(sigs.loc[idx, "cons_low_prev"])})
         
@@ -183,7 +176,7 @@ class ChartWidget(QWidget):
 <head>
     <meta charset="utf-8">
     <title>{ticker} Chart</title>
-    <script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
     <style>
         body {{
             margin: 0;
@@ -195,92 +188,122 @@ class ChartWidget(QWidget):
             width: 100%;
             height: 600px;
         }}
+        #error {{
+            color: #ef5350;
+            padding: 20px;
+            display: none;
+        }}
     </style>
 </head>
 <body>
+    <div id="error"></div>
     <div id="chart"></div>
     <script>
-        const chartContainer = document.getElementById('chart');
-        const chart = LightweightCharts.createChart(chartContainer, {{
-            layout: {{
-                background: {{ color: '#131722' }},
-                textColor: '#d1d4dc',
-            }},
-            grid: {{
-                vertLines: {{ color: '#2a2e39' }},
-                horzLines: {{ color: '#2a2e39' }},
-            }},
-            crosshair: {{
-                mode: LightweightCharts.CrosshairMode.Normal,
-            }},
-            rightPriceScale: {{
-                borderColor: '#2a2e39',
-            }},
-            timeScale: {{
-                borderColor: '#2a2e39',
-                timeVisible: true,
-                secondsVisible: false,
-            }},
-        }});
-        
-        // Candlestick series
-        const candlestickSeries = chart.addCandlestickSeries({{
-            upColor: '#26a69a',
-            downColor: '#ef5350',
-            borderVisible: false,
-            wickUpColor: '#26a69a',
-            wickDownColor: '#ef5350',
-        }});
-        
-        candlestickSeries.setData({candles_json});
-        
-        // Consolidation high line
-        if ({cons_high_json}.length > 0) {{
-            const consHighSeries = chart.addLineSeries({{
-                color: '#26a69a',
-                lineWidth: 2,
-                lineStyle: LightweightCharts.LineStyle.Dashed,
-                title: 'Consolidation High',
-            }});
-            consHighSeries.setData({cons_high_json});
+        // Wait for library to load
+        function initChart() {{
+            if (typeof LightweightCharts === 'undefined') {{
+                setTimeout(initChart, 100);
+                return;
+            }}
+            
+            try {{
+                const chartContainer = document.getElementById('chart');
+                const chart = LightweightCharts.createChart(chartContainer, {{
+                    layout: {{
+                        background: {{ color: '#131722' }},
+                        textColor: '#d1d4dc',
+                    }},
+                    grid: {{
+                        vertLines: {{ color: '#2a2e39' }},
+                        horzLines: {{ color: '#2a2e39' }},
+                    }},
+                    crosshair: {{
+                        mode: LightweightCharts.CrosshairMode.Normal,
+                    }},
+                    rightPriceScale: {{
+                        borderColor: '#2a2e39',
+                    }},
+                    timeScale: {{
+                        borderColor: '#2a2e39',
+                        timeVisible: true,
+                        secondsVisible: false,
+                    }},
+                }});
+                
+                // Candlestick series
+                const candlestickSeries = chart.addCandlestickSeries({{
+                    upColor: '#26a69a',
+                    downColor: '#ef5350',
+                    borderVisible: false,
+                    wickUpColor: '#26a69a',
+                    wickDownColor: '#ef5350',
+                }});
+                
+                const candleData = {candles_json};
+                console.log('Candles count:', candleData.length);
+                console.log('First candle:', candleData[0]);
+                candlestickSeries.setData(candleData);
+                
+                // Consolidation high line
+                const consHighData = {cons_high_json};
+                if (consHighData.length > 0) {{
+                    const consHighSeries = chart.addLineSeries({{
+                        color: '#26a69a',
+                        lineWidth: 2,
+                        lineStyle: LightweightCharts.LineStyle.Dashed,
+                        title: 'Consolidation High',
+                    }});
+                    consHighSeries.setData(consHighData);
+                }}
+                
+                // Consolidation low line
+                const consLowData = {cons_low_json};
+                if (consLowData.length > 0) {{
+                    const consLowSeries = chart.addLineSeries({{
+                        color: '#ef5350',
+                        lineWidth: 2,
+                        lineStyle: LightweightCharts.LineStyle.Dashed,
+                        title: 'Consolidation Low',
+                    }});
+                    consLowSeries.setData(consLowData);
+                }}
+                
+                // True breakouts markers
+                const trueBreakoutData = {true_breakouts_json};
+                if (trueBreakoutData.length > 0) {{
+                    const trueBreakoutSeries = chart.addLineSeries({{
+                        color: '#26a69a',
+                        lineWidth: 0,
+                        pointMarkersVisible: true,
+                        pointMarkersRadius: 6,
+                        title: 'True Breakout',
+                    }});
+                    trueBreakoutSeries.setData(trueBreakoutData);
+                }}
+                
+                // False breakouts markers
+                const falseBreakoutData = {false_breakouts_json};
+                if (falseBreakoutData.length > 0) {{
+                    const falseBreakoutSeries = chart.addLineSeries({{
+                        color: '#ef5350',
+                        lineWidth: 0,
+                        pointMarkersVisible: true,
+                        pointMarkersRadius: 6,
+                        title: 'False Breakout',
+                    }});
+                    falseBreakoutSeries.setData(falseBreakoutData);
+                }}
+                
+                chart.timeScale().fitContent();
+            }} catch (error) {{
+                document.getElementById('error').style.display = 'block';
+                document.getElementById('error').innerHTML = 'Error: ' + error.message;
+                console.error('Chart error:', error);
+            }}
         }}
         
-        // Consolidation low line
-        if ({cons_low_json}.length > 0) {{
-            const consLowSeries = chart.addLineSeries({{
-                color: '#ef5350',
-                lineWidth: 2,
-                lineStyle: LightweightCharts.LineStyle.Dashed,
-                title: 'Consolidation Low',
-            }});
-            consLowSeries.setData({cons_low_json});
-        }}
-        
-        // True breakouts markers
-        if ({true_breakouts_json}.length > 0) {{
-            const trueBreakoutSeries = chart.addLineSeries({{
-                color: '#26a69a',
-                lineWidth: 0,
-                pointMarkersVisible: true,
-                pointMarkersRadius: 6,
-                title: 'True Breakout',
-            }});
-            trueBreakoutSeries.setData({true_breakouts_json});
-        }}
-        
-        // False breakouts markers
-        if ({false_breakouts_json}.length > 0) {{
-            const falseBreakoutSeries = chart.addLineSeries({{
-                color: '#ef5350',
-                lineWidth: 0,
-                pointMarkersVisible: true,
-                pointMarkersRadius: 6,
-                title: 'False Breakout',
-            }});
-            falseBreakoutSeries.setData({false_breakouts_json});
-        }}
-        
-        chart.timeScale().fitContent();
+        // Start initialization
+        initChart();
     </script>
 </body>
 </html>

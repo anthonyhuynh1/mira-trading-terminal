@@ -27,7 +27,16 @@ pip install PyQt6-WebEngine
 
 ### Run
 
+**Option 1: Using the run script (easiest)**
 ```bash
+./run.sh
+```
+
+**Option 2: Manual activation**
+```bash
+# From parent directory
+source .venv/bin/activate
+cd trading-terminal
 python trading_app.py
 ```
 
