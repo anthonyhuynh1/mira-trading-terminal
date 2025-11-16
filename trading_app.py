@@ -515,18 +515,20 @@ class TradingTerminal(QMainWindow):
         self.watchlist_dock.setWidget(self.screener)
         self.watchlist_dock.setObjectName("WatchlistDock")
         self.watchlist_dock.setAllowedAreas(Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea)
-        self.watchlist_dock.setFeatures(QDockWidget.DockWidgetMovable | QDockWidget.DockWidgetFloatable)
+        dock_features = (QDockWidget.DockWidgetFeature.DockWidgetMovable |
+                         QDockWidget.DockWidgetFeature.DockWidgetFloatable)
+        self.watchlist_dock.setFeatures(dock_features)
         self.watchlist_dock.setMinimumWidth(260)
-        self.addDockWidget(Qt.LeftDockWidgetArea, self.watchlist_dock)
+        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.watchlist_dock)
         
         # Assistant dock
         self.chatbot_dock = QDockWidget("Assistant", self)
         self.chatbot_dock.setWidget(self.chatbot)
         self.chatbot_dock.setObjectName("AssistantDock")
         self.chatbot_dock.setAllowedAreas(Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea)
-        self.chatbot_dock.setFeatures(QDockWidget.DockWidgetMovable | QDockWidget.DockWidgetFloatable)
+        self.chatbot_dock.setFeatures(dock_features)
         self.chatbot_dock.setMinimumWidth(320)
-        self.addDockWidget(Qt.RightDockWidgetArea, self.chatbot_dock)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.chatbot_dock)
         
         # Load first ticker by default
         if strategy.TICKERS:
