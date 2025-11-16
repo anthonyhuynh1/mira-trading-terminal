@@ -56,6 +56,8 @@ python trading_app.py
 - False breakout signals (low volume) - marked on chart
 - Multiple timeframes (1h, 4h, 1d)
 - Zoom, pan, and crosshair functionality
+- Light/Dark theme toggle with curated palettes
+- Dockable panels (watchlist, assistant) you can move/rescale
 
 ### AI Assistant
 - Explains signals and patterns

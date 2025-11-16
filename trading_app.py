@@ -8,11 +8,12 @@ import warnings
 warnings.filterwarnings("ignore")
 
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
-                             QHBoxLayout, QSplitter, QTextEdit, QLineEdit,
+                             QHBoxLayout, QTextEdit, QLineEdit,
                              QPushButton, QListWidget, QTabWidget, QLabel, QTableWidget,
-                             QTableWidgetItem, QHeaderView)
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QUrl
-from PyQt6.QtGui import QFont, QColor
+                             QTableWidgetItem, QHeaderView, QDockWidget, QToolBar,
+                             QSizePolicy)
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QUrl, QSize
+from PyQt6.QtGui import QFont
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtWebEngineCore import QWebEngineSettings
 
@@ -23,11 +24,44 @@ import numpy as np
 from datetime import datetime
 
 
+THEMES = {
+    "dark": {
+        "window_bg": "#050b18",
+        "panel_bg": "#0b1222",
+        "surface": "#090f1d",
+        "border": "#1f2539",
+        "text": "#f4f6ff",
+        "muted": "#9aa3be",
+        "accent": "#363944",
+        "accent_hover": "#4a4d59",
+        "input_bg": "#050b17",
+        "chart_theme": "dark",
+        "chart_bg": "#050b18",
+        "chart_toolbar": "#050b18"
+    },
+    "light": {
+        "window_bg": "#f7f8fc",
+        "panel_bg": "#ffffff",
+        "surface": "#eef1f7",
+        "border": "#d9deeb",
+        "text": "#111322",
+        "muted": "#4f5b75",
+        "accent": "#e4e7f2",
+        "accent_hover": "#d4d8ee",
+        "input_bg": "#ffffff",
+        "chart_theme": "light",
+        "chart_bg": "#ffffff",
+        "chart_toolbar": "#f7f8fc"
+    }
+}
+
+
 class ChartWidget(QWidget):
     """Main chart display widget with tabs for price, fundamentals, news."""
     
-    def __init__(self):
+    def __init__(self, theme_provider):
         super().__init__()
+        self.theme_provider = theme_provider
         self.current_ticker = None
         self.default_interval = "60"  # TradingView interval codes (60 = 1h)
         self.current_interval = self.default_interval
@@ -90,7 +124,11 @@ class ChartWidget(QWidget):
     
     def create_tradingview_widget_html(self, ticker: str, interval: str) -> str:
         """Embed TradingView Advanced Chart widget."""
+        theme = self.theme_provider()
         safe_ticker = ticker.replace(" ", "")
+        background = theme["chart_bg"]
+        toolbar_bg = theme["chart_toolbar"]
+        chart_theme = theme["chart_theme"]
         html = f"""
 <!DOCTYPE html>
 <html>
@@ -102,7 +140,7 @@ class ChartWidget(QWidget):
         body {{
             margin: 0;
             padding: 0;
-            background: #131722;
+            background: {background};
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
         }}
         #tv_chart {{
@@ -125,10 +163,10 @@ class ChartWidget(QWidget):
                 symbol: "{safe_ticker}",
                 interval: "{interval}",
                 timezone: "Etc/UTC",
-                theme: "dark",
+                theme: "{chart_theme}",
                 style: "1",
-                backgroundColor: "#131722",
-                toolbar_bg: "#1e222d",
+                backgroundColor: "{background}",
+                toolbar_bg: "{toolbar_bg}",
                 hide_side_toolbar: false,
                 hide_top_toolbar: false,
                 allow_symbol_change: true,
@@ -451,131 +489,184 @@ class TradingTerminal(QMainWindow):
     def __init__(self):
         super().__init__()
         self.current_ticker = None
+        self.current_theme_name = "dark"
+        self.theme_button = None
         self.init_ui()
-        self.apply_dark_theme()
-    
-    def apply_dark_theme(self):
-        """Apply TradingView-like dark theme."""
-        self.setStyleSheet("""
-            QMainWindow {
-                background-color: #050b18;
-                color: #e7ecff;
-            }
-            QWidget {
-                background-color: #0e1427;
-                color: #e7ecff;
-            }
-            QListWidget {
-                background-color: #0a1120;
-                border: 1px solid #1e2a42;
-                color: #e7ecff;
-                padding: 6px;
-            }
-            QListWidget::item:selected {
-                background-color: #4f7cff;
-                color: white;
-            }
-            QLineEdit {
-                background-color: #050b17;
-                border: 1px solid #273149;
-                color: #e7ecff;
-                padding: 8px 10px;
-                border-radius: 6px;
-            }
-            QPushButton {
-                background-color: #4f7cff;
-                color: white;
-                border: none;
-                padding: 10px 14px;
-                border-radius: 8px;
-                font-weight: 600;
-            }
-            QPushButton:hover {
-                background-color: #3c63d6;
-            }
-            QTabWidget::pane {
-                background-color: #0a0f1f;
-                border: 1px solid #1d2640;
-                border-radius: 8px;
-                margin-top: 6px;
-            }
-            QTabBar::tab {
-                background-color: transparent;
-                color: #7f88a8;
-                padding: 10px 18px;
-                border: none;
-                font-weight: 600;
-            }
-            QTabBar::tab:selected {
-                color: #4f7cff;
-                border-bottom: 3px solid #4f7cff;
-                margin-bottom: -3px;
-            }
-            QTextEdit {
-                background-color: #070d1c;
-                border: 1px solid #1d2741;
-                color: #e7ecff;
-                border-radius: 8px;
-                padding: 12px;
-            }
-            QTableWidget {
-                background-color: #070d1c;
-                border: 1px solid #1d2741;
-                color: #e7ecff;
-                gridline-color: #1d2741;
-                border-radius: 8px;
-            }
-            QTableWidget::item {
-                padding: 8px;
-            }
-            QHeaderView::section {
-                background-color: #0e1427;
-                color: #7f88a8;
-                padding: 6px;
-                border: none;
-            }
-            QLabel {
-                color: #7f88a8;
-                font-weight: 600;
-            }
-            QListWidget::item {
-                padding: 6px 4px;
-            }
-        """)
+        self.apply_theme()
     
     def init_ui(self):
         self.setWindowTitle("Trading Terminal - AI Assistant")
-        self.setGeometry(100, 100, 1600, 900)
+        self.setGeometry(80, 80, 1600, 940)
+        self.setDockOptions(QMainWindow.DockOption.AllowTabbedDocks | QMainWindow.DockOption.AnimatedDocks)
         
-        # Central widget with splitter
-        central_widget = QWidget()
-        main_layout = QHBoxLayout()
+        # Top toolbar
+        self.create_toolbar()
         
-        # Create splitter for resizable panels
-        splitter = QSplitter(Qt.Orientation.Horizontal)
-        
-        # Left: Screener (20%)
+        # Widgets
         self.screener = ScreenerWidget(self.on_ticker_selected)
-        splitter.addWidget(self.screener)
-        
-        # Middle: Charts (60%)
-        self.chart_widget = ChartWidget()
-        splitter.addWidget(self.chart_widget)
-        
-        # Right: Chatbot (20%)
+        self.chart_widget = ChartWidget(self.get_current_theme)
         self.chatbot = ChatbotWidget(self.get_context)
-        splitter.addWidget(self.chatbot)
         
-        # Set splitter sizes
-        splitter.setSizes([300, 900, 400])
+        # Central chart
+        self.setCentralWidget(self.chart_widget)
         
-        main_layout.addWidget(splitter)
-        central_widget.setLayout(main_layout)
-        self.setCentralWidget(central_widget)
+        # Watchlist dock
+        self.watchlist_dock = QDockWidget("Watchlist", self)
+        self.watchlist_dock.setWidget(self.screener)
+        self.watchlist_dock.setObjectName("WatchlistDock")
+        self.watchlist_dock.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
+        self.watchlist_dock.setFeatures(QDockWidget.DockWidgetMovable | QDockWidget.DockWidgetFloatable)
+        self.watchlist_dock.setMinimumWidth(260)
+        self.addDockWidget(Qt.LeftDockWidgetArea, self.watchlist_dock)
+        
+        # Assistant dock
+        self.chatbot_dock = QDockWidget("Assistant", self)
+        self.chatbot_dock.setWidget(self.chatbot)
+        self.chatbot_dock.setObjectName("AssistantDock")
+        self.chatbot_dock.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
+        self.chatbot_dock.setFeatures(QDockWidget.DockWidgetMovable | QDockWidget.DockWidgetFloatable)
+        self.chatbot_dock.setMinimumWidth(320)
+        self.addDockWidget(Qt.RightDockWidgetArea, self.chatbot_dock)
         
         # Load first ticker by default
         if strategy.TICKERS:
             self.on_ticker_selected(strategy.TICKERS[0])
+    
+    def create_toolbar(self):
+        toolbar = QToolBar("Main")
+        toolbar.setMovable(False)
+        toolbar.setFloatable(False)
+        toolbar.setIconSize(QSize(16, 16))
+        toolbar.setObjectName("TopToolbar")
+        
+        spacer = QWidget()
+        spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        toolbar.addWidget(spacer)
+        
+        self.theme_button = QPushButton("☀ Light Mode")
+        self.theme_button.clicked.connect(self.toggle_theme)
+        toolbar.addWidget(self.theme_button)
+        
+        self.addToolBar(Qt.TopToolBarArea, toolbar)
+        self.toolbar = toolbar
+    
+    def get_current_theme(self):
+        return THEMES[self.current_theme_name]
+    
+    def apply_theme(self):
+        theme = self.get_current_theme()
+        stylesheet = f"""
+        QMainWindow {{
+            background-color: {theme['window_bg']};
+            color: {theme['text']};
+            font-family: 'Inter', 'SF Pro Display', 'Segoe UI', sans-serif;
+        }}
+        QWidget {{
+            background-color: {theme['panel_bg']};
+            color: {theme['text']};
+        }}
+        QDockWidget {{
+            background-color: {theme['panel_bg']};
+            border: 1px solid {theme['border']};
+        }}
+        QDockWidget::title {{
+            background-color: {theme['surface']};
+            color: {theme['muted']};
+            padding: 6px 10px;
+            border-bottom: 1px solid {theme['border']};
+        }}
+        QListWidget {{
+            background-color: {theme['surface']};
+            border: 1px solid {theme['border']};
+            padding: 6px;
+        }}
+        QListWidget::item {{
+            padding: 6px;
+        }}
+        QListWidget::item:selected {{
+            background-color: {theme['accent']};
+            color: {theme['text']};
+        }}
+        QLineEdit {{
+            background-color: {theme['input_bg']};
+            border: 1px solid {theme['border']};
+            color: {theme['text']};
+            padding: 8px 10px;
+            border-radius: 8px;
+        }}
+        QLineEdit::placeholder {{
+            color: {theme['muted']};
+        }}
+        QPushButton {{
+            background-color: {theme['accent']};
+            color: {theme['text']};
+            border: none;
+            border-radius: 8px;
+            padding: 10px 16px;
+            font-weight: 600;
+        }}
+        QPushButton:hover {{
+            background-color: {theme['accent_hover']};
+        }}
+        QTabWidget::pane {{
+            background-color: {theme['surface']};
+            border: 1px solid {theme['border']};
+            border-radius: 10px;
+            margin-top: 8px;
+        }}
+        QTabBar::tab {{
+            background-color: transparent;
+            color: {theme['muted']};
+            padding: 10px 18px;
+            border: none;
+            font-weight: 600;
+        }}
+        QTabBar::tab:selected {{
+            color: {theme['text']};
+            border-bottom: 3px solid {theme['text']};
+            margin-bottom: -3px;
+        }}
+        QTextEdit {{
+            background-color: {theme['surface']};
+            border: 1px solid {theme['border']};
+            color: {theme['text']};
+            border-radius: 10px;
+            padding: 12px;
+        }}
+        QTableWidget {{
+            background-color: {theme['surface']};
+            border: 1px solid {theme['border']};
+            color: {theme['text']};
+            gridline-color: {theme['border']};
+            border-radius: 10px;
+        }}
+        QHeaderView::section {{
+            background-color: {theme['panel_bg']};
+            color: {theme['muted']};
+            padding: 6px;
+            border: none;
+        }}
+        QToolBar {{
+            background: {theme['window_bg']};
+            border: none;
+        }}
+        QLabel {{
+            color: {theme['muted']};
+            font-weight: 600;
+        }}
+        """
+        self.setStyleSheet(stylesheet)
+        if self.theme_button:
+            if self.current_theme_name == "dark":
+                self.theme_button.setText("☀ Light Mode")
+            else:
+                self.theme_button.setText("🌙 Dark Mode")
+        if self.current_ticker:
+            self.chart_widget.load_ticker(self.current_ticker)
+    
+    def toggle_theme(self):
+        self.current_theme_name = "light" if self.current_theme_name == "dark" else "dark"
+        self.apply_theme()
     
     def on_ticker_selected(self, ticker: str):
         """Handle ticker selection."""
@@ -589,8 +680,9 @@ class TradingTerminal(QMainWindow):
             "ticker": self.current_ticker or "N/A",
             "timeframe": getattr(self.chart_widget, 'current_interval', self.chart_widget.default_interval),
             "timestamp": datetime.now().isoformat(),
-            "chart_type": "candlestick_with_signals",
-            "view": "main_chart"
+            "chart_type": "tradingview_widget",
+            "view": "main_chart",
+            "theme": self.current_theme_name
         }
 
 
