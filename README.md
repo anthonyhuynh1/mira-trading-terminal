@@ -49,8 +49,8 @@ python trading_app.py
 ## 🎨 UI Components
 
 ### Chart Features
-- **TradingView Lightweight Charts** - Professional, free, open-source charting
-- Candlestick visualization with smooth interactions
+- **TradingView Advanced Chart Widget** - official charting experience
+- Candlestick visualization with the full TradingView toolbar
 - Consolidation bands (support/resistance)
 - True breakout signals (high volume) - marked on chart
 - False breakout signals (low volume) - marked on chart
