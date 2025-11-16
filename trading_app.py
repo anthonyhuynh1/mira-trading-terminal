@@ -14,6 +14,7 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QUrl
 from PyQt6.QtGui import QFont, QColor
 from PyQt6.QtWebEngineWidgets import QWebEngineView
+from PyQt6.QtWebEngineCore import QWebEngineSettings
 import json
 import os
 import tempfile
@@ -56,6 +57,9 @@ class ChartWidget(QWidget):
         self.chart_tab = QWidget()
         chart_layout = QVBoxLayout()
         self.chart_view = QWebEngineView()
+        self.chart_view.settings().setAttribute(
+            QWebEngineSettings.WebAttribute.LocalContentCanAccessRemoteUrls, True
+        )
         self.chart_view.setMinimumHeight(600)
         chart_layout.addWidget(self.chart_view)
         self.chart_tab.setLayout(chart_layout)
