@@ -20,6 +20,11 @@ A professional desktop trading application with context-aware AI assistant, insp
 pip install -r requirements.txt
 ```
 
+**Note:** PyQt6-WebEngine is required for TradingView charts. If you encounter issues, install it separately:
+```bash
+pip install PyQt6-WebEngine
+```
+
 ### Run
 
 ```bash
@@ -35,12 +40,13 @@ python trading_app.py
 ## 🎨 UI Components
 
 ### Chart Features
-- Candlestick visualization
+- **TradingView Lightweight Charts** - Professional, free, open-source charting
+- Candlestick visualization with smooth interactions
 - Consolidation bands (support/resistance)
-- True breakout signals (high volume)
-- False breakout signals (low volume)
-- Dynamic volume thresholds
+- True breakout signals (high volume) - marked on chart
+- False breakout signals (low volume) - marked on chart
 - Multiple timeframes (1h, 4h, 1d)
+- Zoom, pan, and crosshair functionality
 
 ### AI Assistant
 - Explains signals and patterns
@@ -62,7 +68,8 @@ python trading_app.py
 ## 🔧 Tech Stack
 
 - **PyQt6**: Desktop GUI framework
-- **Matplotlib**: Chart rendering
+- **PyQt6-WebEngine**: Web view for TradingView charts
+- **TradingView Lightweight Charts**: Free, open-source professional charting library
 - **yfinance**: Market data (free)
 - **Pandas/NumPy**: Data processing
 

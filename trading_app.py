@@ -11,14 +11,12 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QSplitter, QTextEdit, QLineEdit, 
                              QPushButton, QListWidget, QTabWidget, QLabel, QTableWidget,
                              QTableWidgetItem, QHeaderView, QComboBox)
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QUrl
 from PyQt6.QtGui import QFont, QColor
-import matplotlib.pyplot as plt
-try:
-    from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
-except ImportError:
-    from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
-from matplotlib.figure import Figure
+from PyQt6.QtWebEngineWidgets import QWebEngineView
+import json
+import os
+import tempfile
 
 # Import our existing strategy code
 import strategy
@@ -54,12 +52,12 @@ class ChartWidget(QWidget):
         # Tabs: Price Chart | Fundamentals | News
         self.tabs = QTabWidget()
         
-        # Price Chart Tab
+        # Price Chart Tab - Using TradingView Lightweight Charts
         self.chart_tab = QWidget()
         chart_layout = QVBoxLayout()
-        self.figure = Figure(figsize=(12, 8))
-        self.canvas = FigureCanvas(self.figure)
-        chart_layout.addWidget(self.canvas)
+        self.chart_view = QWebEngineView()
+        self.chart_view.setMinimumHeight(600)
+        chart_layout.addWidget(self.chart_view)
         self.chart_tab.setLayout(chart_layout)
         
         # Fundamentals Tab
@@ -100,10 +98,7 @@ class ChartWidget(QWidget):
             self.update_chart(self.current_ticker, timeframe)
     
     def update_chart(self, ticker: str, timeframe: str = "1h"):
-        """Update price chart with signals - TradingView style with candlesticks."""
-        self.figure.clear()
-        self.figure.patch.set_facecolor('#131722')  # Dark background
-        
+        """Update chart using TradingView Lightweight Charts."""
         # Map timeframe to period and interval
         timeframe_map = {
             "1h": ("60d", "1h"),
@@ -115,136 +110,182 @@ class ChartWidget(QWidget):
         # Fetch data
         df = strategy.fetch_hourly_data(ticker, period=period, interval=interval)
         if df.empty:
-            ax = self.figure.add_subplot(111)
-            ax.set_facecolor('#131722')
-            ax.text(0.5, 0.5, f"No data for {ticker}", ha='center', va='center', 
-                   color='#787b86', fontsize=14)
-            ax.axis('off')
-            self.canvas.draw()
+            html = f"<html><body style='background:#131722;color:#d1d4dc;padding:20px;'><h2>No data available for {ticker}</h2></body></html>"
+            self.chart_view.setHtml(html)
             return
         
         # Generate signals
         sigs = strategy.breakout_volume_signals(df)
         
-        # Create subplots with dark theme
-        ax1 = self.figure.add_subplot(211)
-        ax2 = self.figure.add_subplot(212, sharex=ax1)
-        
-        # Apply dark theme to axes
-        for ax in [ax1, ax2]:
-            ax.set_facecolor('#131722')
-            ax.tick_params(colors='#787b86')
-            ax.spines['bottom'].set_color('#2a2e39')
-            ax.spines['top'].set_color('#2a2e39')
-            ax.spines['right'].set_color('#2a2e39')
-            ax.spines['left'].set_color('#2a2e39')
-            ax.xaxis.label.set_color('#787b86')
-            ax.yaxis.label.set_color('#787b86')
-        
-        # Price chart - use candlesticks
-        self.plot_candlesticks(ax1, df, ticker)
-        ax1.plot(sigs.index, sigs["cons_high_prev"], label="Cons High", 
-                color="#26a69a", linestyle="--", alpha=0.7, linewidth=1.5)
-        ax1.plot(sigs.index, sigs["cons_low_prev"], label="Cons Low", 
-                color="#ef5350", linestyle="--", alpha=0.7, linewidth=1.5)
-        
-        # Mark breakouts
-        true_breakouts = sigs.index[sigs["signal"]]
-        false_breakouts = sigs.index[sigs["false_breakout"]]
-        
-        if len(true_breakouts) > 0:
-            ax1.scatter(true_breakouts, df.loc[true_breakouts, "Close"], 
-                       color="#26a69a", marker="^", s=150, label="True Breakout", 
-                       zorder=5, edgecolors="white", linewidths=1)
-        if len(false_breakouts) > 0:
-            ax1.scatter(false_breakouts, df.loc[false_breakouts, "Close"], 
-                       color="#ef5350", marker="v", s=150, label="False Breakout", 
-                       zorder=5, edgecolors="white", linewidths=1)
-        
-        ax1.set_ylabel("Price ($)", color='#787b86', fontsize=10)
-        ax1.set_title(f"{ticker} - Consolidation Breakout Analysis ({timeframe})", 
-                     color='#d1d4dc', fontsize=12, fontweight='bold')
-        legend = ax1.legend(loc='upper left', framealpha=0.9, facecolor='#1e222d', 
-                           edgecolor='#2a2e39')
-        for text in legend.get_texts():
-            text.set_color('#d1d4dc')
-        ax1.grid(True, alpha=0.2, color='#2a2e39')
-        
-        # Volume chart
-        colors = []
-        vol_high = sigs["vol_high_threshold"]
-        vol_low = sigs["vol_low_threshold"]
-        
-        for idx in df.index:
-            if idx not in sigs.index:
-                colors.append("gray")
-                continue
-            vol_val = df.loc[idx, "Volume"]
-            high_thresh = vol_high.loc[idx] if idx in vol_high.index else np.nan
-            low_thresh = vol_low.loc[idx] if idx in vol_low.index else np.nan
-            
-            if pd.isna(high_thresh) or pd.isna(low_thresh):
-                colors.append("gray")
-            elif vol_val >= high_thresh:
-                colors.append("green")
-            elif vol_val < low_thresh:
-                colors.append("red")
+        # Convert data to format for TradingView
+        candles = []
+        for idx, row in df.iterrows():
+            # Handle both Timestamp and datetime objects
+            if hasattr(idx, 'timestamp'):
+                timestamp = int(idx.timestamp() * 1000)
             else:
-                colors.append("gray")
+                timestamp = int(pd.Timestamp(idx).timestamp() * 1000)
+            candles.append({
+                "time": timestamp,
+                "open": float(row["Open"]),
+                "high": float(row["High"]),
+                "low": float(row["Low"]),
+                "close": float(row["Close"]),
+                "volume": float(row["Volume"])
+            })
         
-        ax2.bar(df.index, df["Volume"], color=colors, alpha=0.7, width=0.8)
-        ax2.plot(sigs.index, vol_high, color="#26a69a", linestyle="--", 
-                alpha=0.7, linewidth=1.5, label="High Vol Threshold")
-        ax2.plot(sigs.index, vol_low, color="#ef5350", linestyle="--", 
-                alpha=0.7, linewidth=1.5, label="Low Vol Threshold")
-        ax2.set_ylabel("Volume", color='#787b86', fontsize=10)
-        ax2.set_xlabel("Time", color='#787b86', fontsize=10)
-        ax2.grid(True, alpha=0.2, color='#2a2e39')
+        # Get breakout signals
+        true_breakouts = []
+        false_breakouts = []
+        for idx in sigs.index[sigs["signal"]]:
+            if idx in df.index:
+                if hasattr(idx, 'timestamp'):
+                    timestamp = int(idx.timestamp() * 1000)
+                else:
+                    timestamp = int(pd.Timestamp(idx).timestamp() * 1000)
+                true_breakouts.append({"time": timestamp, "value": float(df.loc[idx, "Close"])})
         
-        self.figure.tight_layout()
-        self.canvas.draw()
+        for idx in sigs.index[sigs["false_breakout"]]:
+            if idx in df.index:
+                if hasattr(idx, 'timestamp'):
+                    timestamp = int(idx.timestamp() * 1000)
+                else:
+                    timestamp = int(pd.Timestamp(idx).timestamp() * 1000)
+                false_breakouts.append({"time": timestamp, "value": float(df.loc[idx, "Close"])})
+        
+        # Get consolidation bands
+        cons_high = []
+        cons_low = []
+        for idx in sigs.index:
+            if idx in df.index and not pd.isna(sigs.loc[idx, "cons_high_prev"]):
+                if hasattr(idx, 'timestamp'):
+                    timestamp = int(idx.timestamp() * 1000)
+                else:
+                    timestamp = int(pd.Timestamp(idx).timestamp() * 1000)
+                cons_high.append({"time": timestamp, "value": float(sigs.loc[idx, "cons_high_prev"])})
+                cons_low.append({"time": timestamp, "value": float(sigs.loc[idx, "cons_low_prev"])})
+        
+        # Create HTML with TradingView Lightweight Charts
+        html = self.create_tradingview_chart_html(ticker, timeframe, candles, true_breakouts, false_breakouts, cons_high, cons_low)
+        self.chart_view.setHtml(html)
     
-    def plot_candlesticks(self, ax, df, ticker):
-        """Plot candlestick chart."""
-        # Sample data for performance (show every Nth candle for large datasets)
-        sample_rate = max(1, len(df) // 500)  # Max 500 candles for performance
-        df_sample = df.iloc[::sample_rate] if sample_rate > 1 else df
+    def create_tradingview_chart_html(self, ticker, timeframe, candles, true_breakouts, false_breakouts, cons_high, cons_low):
+        """Create HTML with TradingView Lightweight Charts."""
+        candles_json = json.dumps(candles)
+        true_breakouts_json = json.dumps(true_breakouts)
+        false_breakouts_json = json.dumps(false_breakouts)
+        cons_high_json = json.dumps(cons_high)
+        cons_low_json = json.dumps(cons_low)
         
-        # Determine up/down colors
-        up_color = "#26a69a"  # Green for up candles
-        down_color = "#ef5350"  # Red for down candles
+        html = f"""
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>{ticker} Chart</title>
+    <script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
+    <style>
+        body {{
+            margin: 0;
+            padding: 0;
+            background: #131722;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        }}
+        #chart {{
+            width: 100%;
+            height: 600px;
+        }}
+    </style>
+</head>
+<body>
+    <div id="chart"></div>
+    <script>
+        const chartContainer = document.getElementById('chart');
+        const chart = LightweightCharts.createChart(chartContainer, {{
+            layout: {{
+                background: {{ color: '#131722' }},
+                textColor: '#d1d4dc',
+            }},
+            grid: {{
+                vertLines: {{ color: '#2a2e39' }},
+                horzLines: {{ color: '#2a2e39' }},
+            }},
+            crosshair: {{
+                mode: LightweightCharts.CrosshairMode.Normal,
+            }},
+            rightPriceScale: {{
+                borderColor: '#2a2e39',
+            }},
+            timeScale: {{
+                borderColor: '#2a2e39',
+                timeVisible: true,
+                secondsVisible: false,
+            }},
+        }});
         
-        # Plot candlesticks
-        for idx, row in df_sample.iterrows():
-            open_price = row["Open"]
-            close_price = row["Close"]
-            high_price = row["High"]
-            low_price = row["Low"]
-            
-            # Determine if candle is up or down
-            is_up = close_price >= open_price
-            color = up_color if is_up else down_color
-            
-            # Draw wick
-            ax.plot([idx, idx], [low_price, high_price], color=color, linewidth=1, alpha=0.8)
-            
-            # Draw body
-            body_bottom = min(open_price, close_price)
-            body_top = max(open_price, close_price)
-            body_height = body_top - body_bottom
-            
-            if body_height > 0:
-                # Rectangle for body
-                ax.bar(idx, body_height, bottom=body_bottom, width=0.6, 
-                      color=color, alpha=0.8, edgecolor=color, linewidth=1)
-            else:
-                # Doji - just a line
-                ax.plot([idx, idx], [open_price - 0.01, open_price + 0.01], 
-                       color=color, linewidth=2, alpha=0.8)
+        // Candlestick series
+        const candlestickSeries = chart.addCandlestickSeries({{
+            upColor: '#26a69a',
+            downColor: '#ef5350',
+            borderVisible: false,
+            wickUpColor: '#26a69a',
+            wickDownColor: '#ef5350',
+        }});
         
-        # Also plot close line for reference
-        ax.plot(df.index, df["Close"], label=f"{ticker}", 
-               color="#2962ff", linewidth=1, alpha=0.3)
+        candlestickSeries.setData({candles_json});
+        
+        // Consolidation high line
+        if ({cons_high_json}.length > 0) {{
+            const consHighSeries = chart.addLineSeries({{
+                color: '#26a69a',
+                lineWidth: 2,
+                lineStyle: LightweightCharts.LineStyle.Dashed,
+                title: 'Consolidation High',
+            }});
+            consHighSeries.setData({cons_high_json});
+        }}
+        
+        // Consolidation low line
+        if ({cons_low_json}.length > 0) {{
+            const consLowSeries = chart.addLineSeries({{
+                color: '#ef5350',
+                lineWidth: 2,
+                lineStyle: LightweightCharts.LineStyle.Dashed,
+                title: 'Consolidation Low',
+            }});
+            consLowSeries.setData({cons_low_json});
+        }}
+        
+        // True breakouts markers
+        if ({true_breakouts_json}.length > 0) {{
+            const trueBreakoutSeries = chart.addLineSeries({{
+                color: '#26a69a',
+                lineWidth: 0,
+                pointMarkersVisible: true,
+                pointMarkersRadius: 6,
+                title: 'True Breakout',
+            }});
+            trueBreakoutSeries.setData({true_breakouts_json});
+        }}
+        
+        // False breakouts markers
+        if ({false_breakouts_json}.length > 0) {{
+            const falseBreakoutSeries = chart.addLineSeries({{
+                color: '#ef5350',
+                lineWidth: 0,
+                pointMarkersVisible: true,
+                pointMarkersRadius: 6,
+                title: 'False Breakout',
+            }});
+            falseBreakoutSeries.setData({false_breakouts_json});
+        }}
+        
+        chart.timeScale().fitContent();
+    </script>
+</body>
+</html>
+        """
+        return html
     
     def update_fundamentals(self, ticker: str):
         """Update fundamentals table."""
