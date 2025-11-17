@@ -11,12 +11,16 @@ from datetime import datetime, time, timedelta
 from zoneinfo import ZoneInfo
 warnings.filterwarnings("ignore")
 
+import os
+
+os.environ.setdefault("QTWEBENGINE_CHROMIUM_FLAGS", "--disable-gpu")
+
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QTextEdit, QLineEdit,
                              QPushButton, QListWidget, QLabel, QTableWidget,
                              QTableWidgetItem, QHeaderView, QDockWidget,
                              QSizePolicy, QFrame, QToolButton, QMenu, QToolBar,
-                             QComboBox, QTabWidget, QSplitter, QStyle)
+                             QComboBox, QTabWidget, QSplitter, QStyle, QTabBar)
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QUrl, QSize, QEvent
 from PyQt6.QtGui import QFont, QAction
 from typing import Callable, Dict
@@ -47,8 +51,8 @@ THEMES = {
         "button_text": "#000000",
         "button_hover_text": "#ffffff",
         "input_bg": "#000000",
-        "tab_bg": "#ffffff",
-        "tab_text": "#000000",
+        "tab_bg": "#17171b",
+        "tab_text": "#f5f5f5",
         "chart_theme": "dark",
         "chart_bg": "#000000",
         "chart_toolbar": "#000000",
@@ -79,12 +83,15 @@ THEMES = {
 BRAND_COLORS = {
     "NVDA": "#76b900",
     "AAPL": "#a2aaad",
-    "TSLA": "#cc0000",
-    "MSFT": "#737373",
+    "TSLA": "#e82127",
+    "MSFT": "#00a4ef",
     "AMZN": "#ff9900",
     "META": "#0a66ff",
     "GOOG": "#1a73e8",
     "NFLX": "#e50914",
+    "SPY": "#1159a4",
+    "QQQ": "#5c6bc0",
+    "AMD": "#ff6f00",
 }
 
 
@@ -196,12 +203,23 @@ class WorkspaceDock(QDockWidget):
         layout.setContentsMargins(12, 6, 8, 6)
         layout.setSpacing(6)
 
+        self.tab_strip = QWidget()
+        self.tab_strip.setObjectName("DockTabStrip")
+        self.tab_strip.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        self.tab_strip_layout = QHBoxLayout(self.tab_strip)
+        self.tab_strip_layout.setContentsMargins(0, 0, 0, 0)
+        self.tab_strip_layout.setSpacing(6)
+        self.tab_strip.hide()
+
         title = QLabel(self.windowTitle())
         title.setObjectName("DockTitle")
         title.setCursor(Qt.CursorShape.PointingHandCursor)
+        title.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        layout.addWidget(self.tab_strip)
         layout.addWidget(title)
         layout.addStretch()
         self._title_label = title
+        self._tab_buttons: list[QToolButton] = []
 
         self.min_btn = self._create_icon_button("icons/minimize.svg", self.toggle_collapsed, "Minimize")
         self.expand_btn = self._create_icon_button("icons/expand.svg", self.expand_to_fill, "Expand to fit space")
@@ -346,8 +364,71 @@ class WorkspaceDock(QDockWidget):
             self._title_bar_widget.setProperty("tabbed", tabbed)
             self._title_bar_widget.style().unpolish(self._title_bar_widget)
             self._title_bar_widget.style().polish(self._title_bar_widget)
+        self._refresh_tab_strip(tabbed)
         if getattr(self, "_content_widget", None) and hasattr(self._content_widget, "set_tab_mode"):
             self._content_widget.set_tab_mode(tabbed)
+
+    def _clear_tab_strip(self):
+        if not hasattr(self, "tab_strip_layout"):
+            return
+        while self.tab_strip_layout.count():
+            item = self.tab_strip_layout.takeAt(0)
+            widget = item.widget()
+            if widget:
+                widget.deleteLater()
+
+    def _main_window(self):
+        parent = self.parent()
+        while parent and not isinstance(parent, QMainWindow):
+            parent = parent.parent()
+        return parent if isinstance(parent, QMainWindow) else None
+
+    def _hide_native_tab_bars(self):
+        main = self._main_window()
+        if not main:
+            return
+        for tabbar in main.findChildren(QTabBar):
+            tabbar.setVisible(False)
+
+    def _refresh_tab_strip(self, tabbed: bool):
+        if not hasattr(self, "tab_strip"):
+            return
+        if not tabbed:
+            self.tab_strip.hide()
+            self._clear_tab_strip()
+            if self._title_label:
+                self._title_label.show()
+            return
+        self._hide_native_tab_bars()
+        main = self._main_window()
+        if not main:
+            self.tab_strip.hide()
+            return
+        members = [self]
+        for dock in main.tabifiedDockWidgets(self):
+            if isinstance(dock, WorkspaceDock):
+                members.append(dock)
+        self._clear_tab_strip()
+        self.tab_strip.show()
+        active = next((dock for dock in members if dock.isVisible()), self)
+        for dock in members:
+            btn = QToolButton()
+            btn.setObjectName("DockTabButton")
+            btn.setText(dock.windowTitle())
+            btn.setCheckable(True)
+            btn.setChecked(dock is active)
+            btn.clicked.connect(lambda checked=False, target=dock: self._activate_tab(target))
+            self.tab_strip_layout.addWidget(btn)
+        self.tab_strip_layout.addStretch()
+        if self._title_label:
+            self._title_label.hide()
+
+    def _activate_tab(self, target: "WorkspaceDock"):
+        if not target:
+            return
+        target.raise_()
+        target.show()
+        target.activateWindow()
 
 
 class StatPill(QFrame):
@@ -581,7 +662,7 @@ class MarketClockWidget(QWidget):
 
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.update_time)
-        self.timer.start(30_000)
+        self.timer.start(1_000)
         self.update_time()
 
     def update_time(self):
@@ -718,7 +799,7 @@ class ChartWidget(QWidget):
 </html>
         """
         return html
-
+    
 
 class FundamentalsWidget(QWidget):
     """Standalone fundamentals table widget."""
@@ -753,7 +834,7 @@ class FundamentalsWidget(QWidget):
         try:
             stock = yf.Ticker(ticker)
             info = stock.info
-
+            
             metrics = [
                 ("Market Cap", info.get("marketCap", "N/A")),
                 ("P/E Ratio", info.get("trailingPE", "N/A")),
@@ -765,17 +846,17 @@ class FundamentalsWidget(QWidget):
                 ("Volume (Avg)", info.get("averageVolume", "N/A")),
                 ("Beta", info.get("beta", "N/A")),
             ]
-
+            
             self.table.setRowCount(len(metrics))
             for row, (metric, value) in enumerate(metrics):
                 self.table.setItem(row, 0, QTableWidgetItem(str(metric)))
                 self.table.setItem(row, 1, QTableWidgetItem(str(value)))
-
+        
         except Exception as e:
             self.table.setRowCount(1)
             self.table.setItem(0, 0, QTableWidgetItem("Error"))
             self.table.setItem(0, 1, QTableWidgetItem(str(e)))
-
+    
     def set_tab_mode(self, tabbed: bool):
         if hasattr(self, "header_frame"):
             self.header_frame.setVisible(not tabbed)
@@ -1105,7 +1186,7 @@ class ScreenerWidget(QWidget):
         self.filter_summary = QLabel("Focus: All setups")
         self.filter_summary.setObjectName("SectionHint")
         layout.addWidget(self.filter_summary)
-
+        
         # Quick scan button
         scan_btn = QPushButton("Scan Universe")
         scan_btn.clicked.connect(self.scan_universe)
@@ -1201,11 +1282,11 @@ class TradingTerminal(QMainWindow):
             QMainWindow.DockOption.GroupedDragging
         )
         self.setTabPosition(Qt.DockWidgetArea.AllDockWidgetAreas, QTabWidget.TabPosition.North)
-
+        
         central = QWidget()
         central.setObjectName("Workspace")
         self.setCentralWidget(central)
-
+        
         header = self.create_header()
         self.setMenuWidget(header)
         self.setup_stow_bar()
@@ -1515,13 +1596,17 @@ class TradingTerminal(QMainWindow):
         if not self.quote_widget:
             return
         ticker = (ticker or "").strip().upper()
+        accent = None
         if ticker:
-            brand_color = BRAND_COLORS.get(ticker, ticker_hash_color(ticker))
-            accent = soften_color(brand_color, 0.65)
-        else:
-            accent = None
+            brand_color = BRAND_COLORS.get(ticker) or ticker_hash_color(ticker)
+            if self.current_theme_name == "dark":
+                pastel = soften_color(brand_color, 0.85)
+                accent = mix_colors("#101013", pastel, 0.55)
+            else:
+                pastel = soften_color(brand_color, 0.45)
+                accent = mix_colors("#ffffff", pastel, 0.25)
         self.quote_widget.apply_brand_color(accent)
-
+    
     def create_header(self):
         header = QFrame()
         header.setObjectName("Header")
@@ -1545,7 +1630,7 @@ class TradingTerminal(QMainWindow):
         layout.addWidget(self.market_clock)
 
         layout.addStretch()
-
+        
         controls_widget = QWidget()
         controls_widget.setObjectName("HeaderControls")
         controls_layout = QHBoxLayout(controls_widget)
@@ -1745,6 +1830,20 @@ class TradingTerminal(QMainWindow):
         }}
         QLabel#DockTitle {{
             color: {theme['tab_text']};
+        }}
+        QWidget#DockTabStrip {{
+            background: transparent;
+        }}
+        QToolButton#DockTabButton {{
+            background-color: transparent;
+            border: 1px solid {theme['divider']};
+            border-radius: 0px;
+            padding: 4px 10px;
+            color: {theme['tab_text']};
+        }}
+        QToolButton#DockTabButton:checked {{
+            background-color: {theme['tab_text']};
+            color: {theme['panel_bg']};
         }}
         QDockWidget::title {{
             padding: 0;
@@ -1963,6 +2062,7 @@ class TradingTerminal(QMainWindow):
 
 
 def main():
+    QApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLContexts)
     app = QApplication(sys.argv)
     app.setStyle("Fusion")  # Modern look
     
