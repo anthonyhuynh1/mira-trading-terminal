@@ -7,6 +7,7 @@ import sys
 import warnings
 import colorsys
 from collections import defaultdict
+from functools import partial
 from datetime import datetime, time, timedelta
 from zoneinfo import ZoneInfo
 warnings.filterwarnings("ignore")
@@ -21,11 +22,48 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QTableWidgetItem, QHeaderView, QDockWidget,
                              QSizePolicy, QFrame, QToolButton, QMenu, QToolBar,
                              QComboBox, QTabWidget, QSplitter, QStyle, QTabBar)
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QUrl, QSize, QEvent
-from PyQt6.QtGui import QFont, QAction
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QUrl, QSize, QEvent, QObject
+from PyQt6.QtGui import QFont, QAction, QIcon
 from typing import Callable, Dict
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtWebEngineCore import QWebEngineSettings
+
+
+class DockTabBarFilter(QObject):
+    """Hide Qt's built-in dock tab bars so custom headers can render tabs."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+
+    def _is_dock_tabbar(self, obj):
+        if isinstance(obj, QTabBar):
+            return True
+        return bool(getattr(obj, "inherits", lambda *_: False)("QTabBar"))
+
+    def eventFilter(self, obj, event):
+        if self._is_dock_tabbar(obj):
+            parent = obj.parent()
+            dock_related = False
+            while parent is not None:
+                meta = getattr(parent, "metaObject", None)
+                if callable(meta) and "Dock" in meta().className():
+                    dock_related = True
+                    break
+                parent = parent.parent()
+            if dock_related and event.type() in (
+                QEvent.Type.Show,
+                QEvent.Type.ShowToParent,
+                QEvent.Type.Resize,
+                QEvent.Type.Paint,
+                QEvent.Type.Enter,
+            ):
+                obj.setMaximumHeight(0)
+                obj.setMinimumHeight(0)
+                obj.hide()
+                obj.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+                return True
+        return super().eventFilter(obj, event)
+
 
 # Import our existing strategy code
 import strategy
@@ -189,7 +227,6 @@ class WorkspaceDock(QDockWidget):
             QDockWidget.DockWidgetFeature.DockWidgetFloatable
         )
         self.collapsed = False
-        self._title_label = None
         self._collapsed_height = 48
         self._base_title = self.windowTitle()
         self.link_callback = link_callback
@@ -211,15 +248,7 @@ class WorkspaceDock(QDockWidget):
         self.tab_strip_layout.setSpacing(6)
         self.tab_strip.hide()
 
-        title = QLabel(self.windowTitle())
-        title.setObjectName("DockTitle")
-        title.setCursor(Qt.CursorShape.PointingHandCursor)
-        title.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-        layout.addWidget(self.tab_strip)
-        layout.addWidget(title)
-        layout.addStretch()
-        self._title_label = title
-        self._tab_buttons: list[QToolButton] = []
+        layout.addWidget(self.tab_strip, stretch=1)
 
         self.min_btn = self._create_icon_button("icons/minimize.svg", self.toggle_collapsed, "Minimize")
         self.expand_btn = self._create_icon_button("icons/expand.svg", self.expand_to_fill, "Expand to fit space")
@@ -296,9 +325,8 @@ class WorkspaceDock(QDockWidget):
 
     def setWindowTitle(self, title: str):
         super().setWindowTitle(title)
-        if self._title_label:
-            self._base_title = title
-            self._title_label.setText(self._link_text(title))
+        self._base_title = title
+        self._refresh_cluster_tabs()
 
     def eventFilter(self, obj, event):
         if obj is getattr(self, "_title_bar_widget", None):
@@ -326,15 +354,9 @@ class WorkspaceDock(QDockWidget):
             QTimer.singleShot(0, self._sync_tab_state)
         return super().event(event)
 
-    def _link_text(self, base: str) -> str:
-        if not hasattr(self, "_link_group") or self._link_group is None:
-            return base
-        return f"{base} - #{self._link_group}"
-
     def set_link_group_display(self, group: int | None):
         self._link_group = group
-        if self._title_label:
-            self._title_label.setText(self._link_text(self._base_title))
+        self._refresh_cluster_tabs()
 
     def show_link_menu(self):
         if not self.link_callback:
@@ -346,7 +368,8 @@ class WorkspaceDock(QDockWidget):
         for group in range(1, 7):
             action = menu.addAction(f"Group {group}")
             action.triggered.connect(lambda checked=False, g=group: self.link_callback(self.key, g))
-        menu.exec(self._title_label.mapToGlobal(self._title_label.rect().bottomLeft()))
+        anchor = self.tab_strip if self.tab_strip.isVisible() else self._title_bar_widget
+        menu.exec(anchor.mapToGlobal(anchor.rect().bottomLeft()))
 
     def _is_tabbed(self) -> bool:
         parent = self.parentWidget()
@@ -358,13 +381,11 @@ class WorkspaceDock(QDockWidget):
 
     def _sync_tab_state(self):
         tabbed = self._is_tabbed()
-        if self._title_label:
-            self._title_label.setVisible(not tabbed)
         if getattr(self, "_title_bar_widget", None):
             self._title_bar_widget.setProperty("tabbed", tabbed)
             self._title_bar_widget.style().unpolish(self._title_bar_widget)
             self._title_bar_widget.style().polish(self._title_bar_widget)
-        self._refresh_tab_strip(tabbed)
+        self._refresh_cluster_tabs()
         if getattr(self, "_content_widget", None) and hasattr(self._content_widget, "set_tab_mode"):
             self._content_widget.set_tab_mode(tabbed)
 
@@ -377,6 +398,12 @@ class WorkspaceDock(QDockWidget):
             if widget:
                 widget.deleteLater()
 
+    def _display_title(self) -> str:
+        title = self._base_title
+        if getattr(self, "_link_group", None):
+            title = f"{title} · #{self._link_group}"
+        return title
+
     def _main_window(self):
         parent = self.parent()
         while parent and not isinstance(parent, QMainWindow):
@@ -384,44 +411,66 @@ class WorkspaceDock(QDockWidget):
         return parent if isinstance(parent, QMainWindow) else None
 
     def _hide_native_tab_bars(self):
-        main = self._main_window()
-        if not main:
-            return
-        for tabbar in main.findChildren(QTabBar):
-            tabbar.setVisible(False)
+        container = self.parentWidget()
+        visited = set()
+        while container:
+            for tabbar in container.findChildren(QTabBar):
+                if tabbar in visited:
+                    continue
+                visited.add(tabbar)
+                tabbar.setVisible(False)
+                tabbar.setMaximumHeight(0)
+                tabbar.setMinimumHeight(0)
+                tabbar.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+            container = container.parentWidget()
 
-    def _refresh_tab_strip(self, tabbed: bool):
-        if not hasattr(self, "tab_strip"):
-            return
-        if not tabbed:
-            self.tab_strip.hide()
-            self._clear_tab_strip()
-            if self._title_label:
-                self._title_label.show()
-            return
-        self._hide_native_tab_bars()
+    def _collect_tab_cluster(self) -> list["WorkspaceDock"]:
         main = self._main_window()
         if not main:
-            self.tab_strip.hide()
-            return
-        members = [self]
+            return [self]
+        cluster = [self]
         for dock in main.tabifiedDockWidgets(self):
             if isinstance(dock, WorkspaceDock):
-                members.append(dock)
-        self._clear_tab_strip()
+                cluster.append(dock)
+        ordered: list[WorkspaceDock] = []
+        for dock in cluster:
+            if dock not in ordered:
+                ordered.append(dock)
+        return ordered
+
+    def _refresh_cluster_tabs(self):
+        if not hasattr(self, "tab_strip"):
+            return
+        cluster = self._collect_tab_cluster()
+        tabbed = len(cluster) > 1
+        if tabbed:
+            self._hide_native_tab_bars()
+        active = next((dock for dock in cluster if dock.isVisible()), cluster[0])
+        for dock in cluster:
+            dock._apply_tab_ui(cluster, active, tabbed)
+
+    def _apply_tab_ui(self, cluster: list["WorkspaceDock"], active: "WorkspaceDock", tabbed: bool):
+        if not hasattr(self, "tab_strip"):
+            return
         self.tab_strip.show()
-        active = next((dock for dock in members if dock.isVisible()), self)
-        for dock in members:
+        self._clear_tab_strip()
+        multi = len(cluster) > 1
+        for dock in cluster:
             btn = QToolButton()
             btn.setObjectName("DockTabButton")
-            btn.setText(dock.windowTitle())
-            btn.setCheckable(True)
-            btn.setChecked(dock is active)
-            btn.clicked.connect(lambda checked=False, target=dock: self._activate_tab(target))
+            btn.setText(dock._display_title())
+            btn.setProperty("solo", not multi)
+            if multi:
+                btn.setCheckable(True)
+                btn.setChecked(dock is active)
+                btn.clicked.connect(partial(self._activate_tab, dock))
+                btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            else:
+                btn.setCheckable(False)
+                btn.setCursor(Qt.CursorShape.ArrowCursor)
+                btn.setEnabled(False)
             self.tab_strip_layout.addWidget(btn)
         self.tab_strip_layout.addStretch()
-        if self._title_label:
-            self._title_label.hide()
 
     def _activate_tab(self, target: "WorkspaceDock"):
         if not target:
@@ -1607,6 +1656,20 @@ class TradingTerminal(QMainWindow):
                 accent = mix_colors("#ffffff", pastel, 0.25)
         self.quote_widget.apply_brand_color(accent)
     
+    def _build_header_button(self, glyph: str, tooltip: str) -> QToolButton:
+        btn = QToolButton()
+        btn.setObjectName("UtilityIconButton")
+        btn.setText(glyph)
+        btn.setToolTip(tooltip)
+        btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn.setAutoRaise(False)
+        btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        btn.setCheckable(False)
+        btn.setIcon(QIcon())
+        btn.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        btn.setFixedSize(QSize(36, 36))
+        return btn
+    
     def create_header(self):
         header = QFrame()
         header.setObjectName("Header")
@@ -1631,34 +1694,26 @@ class TradingTerminal(QMainWindow):
 
         layout.addStretch()
         
-        controls_widget = QWidget()
-        controls_widget.setObjectName("HeaderControls")
-        controls_layout = QHBoxLayout(controls_widget)
+        controls_container = QWidget()
+        controls_container.setObjectName("HeaderControls")
+        controls_layout = QHBoxLayout(controls_container)
         controls_layout.setContentsMargins(0, 0, 0, 0)
-        controls_layout.setSpacing(8)
+        controls_layout.setSpacing(4)
 
-        self.refresh_button = QPushButton("Refresh")
-        self.refresh_button.setObjectName("UtilityButton")
+        self.refresh_button = self._build_header_button("↻", "Refresh market data")
         self.refresh_button.clicked.connect(self.refresh_snapshot)
         controls_layout.addWidget(self.refresh_button)
 
-        self.widget_button = QToolButton()
-        self.widget_button.setText("Add Widget")
-        self.widget_button.setObjectName("UtilityButton")
+        self.widget_button = self._build_header_button("+", "Add widget")
         self.widget_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         controls_layout.addWidget(self.widget_button)
         
-        self.theme_button = QPushButton("Light Mode")
-        self.theme_button.setObjectName("ToggleButton")
+        self.theme_button = self._build_header_button("", "Toggle theme")
         self.theme_button.clicked.connect(self.toggle_theme)
         controls_layout.addWidget(self.theme_button)
 
-        for btn in (self.refresh_button, self.widget_button, self.theme_button):
-            btn.setFixedHeight(TOUCH_TARGET)
-            btn.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-
-        controls_widget.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-        layout.addWidget(controls_widget)
+        controls_container.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        layout.addWidget(controls_container)
         return header
 
     def setup_stow_bar(self):
@@ -1838,12 +1893,19 @@ class TradingTerminal(QMainWindow):
             background-color: transparent;
             border: 1px solid {theme['divider']};
             border-radius: 0px;
-            padding: 4px 10px;
+            padding: 6px 12px;
             color: {theme['tab_text']};
         }}
         QToolButton#DockTabButton:checked {{
             background-color: {theme['tab_text']};
             color: {theme['panel_bg']};
+        }}
+        QToolButton#DockTabButton[solo="true"] {{
+            border-color: {theme['divider']};
+            color: {theme['tab_text']};
+        }}
+        QToolButton#DockTabButton:disabled {{
+            color: {theme['tab_text']};
         }}
         QDockWidget::title {{
             padding: 0;
@@ -1956,6 +2018,18 @@ class TradingTerminal(QMainWindow):
             color: {theme['button_hover_text']};
             border-color: {theme['accent_hover']};
         }}
+        QToolButton#UtilityIconButton {{
+            background-color: transparent;
+            border: 1px solid {theme['text']};
+            border-radius: 6px;
+            padding: 0;
+            color: {theme['text']};
+        }}
+        QToolButton#UtilityIconButton:hover {{
+            background-color: {theme['accent']};
+            color: {theme['button_text']};
+            border-color: {theme['accent']};
+        }}
         QPushButton#ToggleButton {{
             background-color: transparent;
             border: 1px solid {theme['text']};
@@ -2001,17 +2075,15 @@ class TradingTerminal(QMainWindow):
             border: none;
             padding: {spacing - 6}px {spacing}px;
         }}
-        QLabel {{
-            color: {theme['muted']};
-            font-weight: 600;
-        }}
         """
         self.setStyleSheet(stylesheet)
         if self.theme_button:
             if self.current_theme_name == "dark":
-                self.theme_button.setText("Light Mode")
+                self.theme_button.setText("☀")
+                self.theme_button.setToolTip("Switch to light mode")
             else:
-                self.theme_button.setText("Dark Mode")
+                self.theme_button.setText("☾")
+                self.theme_button.setToolTip("Switch to dark mode")
         if self.current_ticker and self.chart_widget:
             self.chart_widget.refresh_theme()
             if self.quote_widget:
@@ -2065,8 +2137,11 @@ def main():
     QApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLContexts)
     app = QApplication(sys.argv)
     app.setStyle("Fusion")  # Modern look
+    tab_filter = DockTabBarFilter(app)
+    app.installEventFilter(tab_filter)
     
     window = TradingTerminal()
+    window._dock_tab_filter = tab_filter
     window.show()
     
     sys.exit(app.exec())
