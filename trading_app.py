@@ -16,15 +16,15 @@ import os
 
 os.environ.setdefault("QTWEBENGINE_CHROMIUM_FLAGS", "--disable-gpu")
 
-from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
-                             QHBoxLayout, QTextEdit, QLineEdit,
+from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
+                             QHBoxLayout, QGridLayout, QTextEdit, QLineEdit,
                              QPushButton, QListWidget, QLabel, QTableWidget,
                              QTableWidgetItem, QHeaderView, QDockWidget,
                              QSizePolicy, QFrame, QToolButton, QMenu, QToolBar,
                              QComboBox, QTabWidget, QSplitter, QStyle, QTabBar)
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QUrl, QSize, QEvent, QObject
 from PyQt6.QtGui import QFont, QAction, QIcon
-from typing import Callable, Dict
+from typing import Any, Callable, Dict
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtWebEngineCore import QWebEngineSettings
 
@@ -77,44 +77,58 @@ TOUCH_TARGET = 44
 
 THEMES = {
     "dark": {
-        "window_bg": "#000000",
-        "panel_bg": "#000000",
-        "surface": "#000000",
-        "surface_alt": "#000000",
-        "border": "#ffffff",
-        "text": "#ffffff",
-        "muted": "#ffffff",
-        "accent": "#ffffff",
-        "accent_hover": "#000000",
-        "button_text": "#000000",
-        "button_hover_text": "#ffffff",
-        "input_bg": "#000000",
-        "tab_bg": "#17171b",
-        "tab_text": "#f5f5f5",
+        "window_bg": "#05070B",
+        "panel_bg": "#0C111B",
+        "surface": "#111726",
+        "surface_alt": "#1B2234",
+        "border": "#20283D",
+        "divider": "#252F45",
+        "divider_subtle": "#161C2B",
+        "text": "#F5F7FF",
+        "muted": "#A1A8C3",
+        "accent": "#F9E09A",
+        "accent_hover": "#FFE8B5",
+        "button_text": "#111318",
+        "button_hover_text": "#05070B",
+        "input_bg": "#0F1522",
+        "tab_bg": "#0A0F18",
+        "tab_text": "#F5F7FF",
         "chart_theme": "dark",
-        "chart_bg": "#000000",
-        "chart_toolbar": "#000000",
-        "divider": "#ffffff"
+        "chart_bg": "#060910",
+        "chart_toolbar": "#0D1421",
+        "chip_bg": "#151C2C",
+        "chip_text": "#D5DCF2",
+        "positive": "#4ADE80",
+        "negative": "#F87171",
+        "hero_top": "#161F32",
+        "hero_bottom": "#080B12"
     },
     "light": {
-        "window_bg": "#ffffff",
-        "panel_bg": "#ffffff",
-        "surface": "#ffffff",
-        "surface_alt": "#ffffff",
-        "border": "#000000",
-        "text": "#000000",
-        "muted": "#000000",
-        "accent": "#000000",
-        "accent_hover": "#ffffff",
-        "button_text": "#ffffff",
-        "button_hover_text": "#000000",
-        "input_bg": "#ffffff",
-        "tab_bg": "#000000",
-        "tab_text": "#ffffff",
+        "window_bg": "#F5F6FA",
+        "panel_bg": "#FFFFFF",
+        "surface": "#FFFFFF",
+        "surface_alt": "#F2F4FA",
+        "border": "#E1E5EE",
+        "divider": "#E3E7F2",
+        "divider_subtle": "#ECEFF6",
+        "text": "#14151A",
+        "muted": "#5F6578",
+        "accent": "#14151A",
+        "accent_hover": "#2F3747",
+        "button_text": "#F8F9FF",
+        "button_hover_text": "#F5F7FF",
+        "input_bg": "#F8F9FF",
+        "tab_bg": "#14151A",
+        "tab_text": "#F8F9FF",
         "chart_theme": "light",
-        "chart_bg": "#ffffff",
-        "chart_toolbar": "#ffffff",
-        "divider": "#000000"
+        "chart_bg": "#FFFFFF",
+        "chart_toolbar": "#F4F5FB",
+        "chip_bg": "#EEF1F8",
+        "chip_text": "#3A3F52",
+        "positive": "#10B981",
+        "negative": "#DC2626",
+        "hero_top": "#FFFFFF",
+        "hero_bottom": "#EDEFF6"
     }
 }
 
@@ -131,6 +145,188 @@ BRAND_COLORS = {
     "QQQ": "#5c6bc0",
     "AMD": "#ff6f00",
 }
+
+CURRENCY_SYMBOLS = {
+    "USD": "$",
+    "EUR": "€",
+    "GBP": "£",
+    "JPY": "¥",
+    "CNY": "¥",
+    "CAD": "$",
+    "AUD": "$",
+    "CHF": "CHF",
+}
+
+
+def compute_market_status(fast_info: dict | None, info: dict | None) -> str:
+    fast_info = fast_info or {}
+    info = info or {}
+    state = (fast_info.get("market_state") or fast_info.get("marketState") or
+             info.get("marketState") or "Live data")
+    state = str(state).replace("_", " ").strip()
+    return state.title() or "Live Data"
+
+
+def build_snapshot(ticker: str, fast_info: dict | None = None, info: dict | None = None) -> dict:
+    fast_info = fast_info or {}
+    info = info or {}
+    snapshot = {"symbol": ticker.upper()}
+
+    price = (fast_info.get("last_price") or fast_info.get("lastPrice") or
+             fast_info.get("lastSalePrice") or info.get("regularMarketPrice") or
+             info.get("currentPrice"))
+    prev_close = (fast_info.get("previous_close") or fast_info.get("previousClose") or
+                  info.get("previousClose"))
+    open_price = (fast_info.get("open") or fast_info.get("regularMarketOpen") or
+                  info.get("open"))
+    day_high = (fast_info.get("day_high") or fast_info.get("dayHigh") or
+                info.get("dayHigh") or info.get("regularMarketDayHigh"))
+    day_low = (fast_info.get("day_low") or fast_info.get("dayLow") or
+               info.get("dayLow") or info.get("regularMarketDayLow"))
+    avg_volume = (fast_info.get("tenDayAverageVolume") or fast_info.get("avgVolume") or
+                  info.get("averageVolume10days") or info.get("averageDailyVolume10Day") or
+                  info.get("averageVolume"))
+    market_cap = info.get("marketCap")
+    shares_outstanding = info.get("sharesOutstanding") or info.get("floatShares")
+    pe_ratio = info.get("trailingPE") or info.get("forwardPE")
+    dividend_yield = info.get("dividendYield")
+    currency = (info.get("currency") or info.get("financialCurrency") or "USD").upper()
+    exchange = (info.get("fullExchangeName") or info.get("exchange") or info.get("market") or
+                info.get("quoteType") or "Global").upper()
+    pre_price = (fast_info.get("pre_market_price") or fast_info.get("preMarketPrice") or
+                 info.get("preMarketPrice"))
+    pre_time = fast_info.get("preMarketTime") or info.get("preMarketTime")
+    pre_change = None
+    pre_change_pct = None
+    if pre_price is not None and prev_close:
+        pre_change = pre_price - prev_close
+        pre_change_pct = (pre_change / prev_close) * 100 if prev_close else None
+    if pre_time:
+        try:
+            pre_time = datetime.fromtimestamp(float(pre_time)).strftime("%b %d - %H:%M")
+        except Exception:
+            pre_time = str(pre_time)
+
+    if price is not None and prev_close is not None:
+        change = price - prev_close
+        change_pct = (change / prev_close) * 100 if prev_close else None
+    else:
+        change = None
+        change_pct = None
+
+    volume = fast_info.get("volume") or info.get("volume") or info.get("averageVolume")
+    high_52 = fast_info.get("yearHigh") or info.get("fiftyTwoWeekHigh")
+    low_52 = fast_info.get("yearLow") or info.get("fiftyTwoWeekLow")
+
+    snapshot.update({
+        "name": info.get("shortName") or info.get("longName") or ticker.upper(),
+        "price": price,
+        "change": change,
+        "change_pct": change_pct,
+        "volume": volume,
+        "volume_label": "Session volume" if fast_info.get("volume") else "Avg volume",
+        "time": datetime.now().strftime("%b %d - %H:%M"),
+        "status": compute_market_status(fast_info, info),
+        "currency": currency,
+        "exchange": exchange,
+        "open": open_price,
+        "day_high": day_high,
+        "day_low": day_low,
+        "prev_close": prev_close,
+        "avg_volume": avg_volume,
+        "market_cap": market_cap,
+        "shares_outstanding": shares_outstanding,
+        "pe_ratio": pe_ratio,
+        "dividend_yield": dividend_yield,
+        "pre_price": pre_price,
+        "pre_change": pre_change,
+        "pre_change_pct": pre_change_pct,
+        "pre_status": "Pre",
+        "pre_time": pre_time,
+    })
+
+    if high_52 and low_52:
+        snapshot["range"] = f"${low_52:,.0f} - ${high_52:,.0f}"
+        snapshot["range_label"] = "52W range"
+        snapshot["fifty_two_week_low"] = low_52
+        snapshot["fifty_two_week_high"] = high_52
+    else:
+        snapshot["range"] = None
+        snapshot["fifty_two_week_low"] = low_52
+        snapshot["fifty_two_week_high"] = high_52
+
+    return snapshot
+
+
+class TickerDataCache:
+    """Lightweight TTL cache for expensive yfinance calls."""
+
+    def __init__(self, ttl_seconds: int = 180):
+        self.ttl = timedelta(seconds=ttl_seconds)
+        self.cache: dict[str, dict[str, Any]] = {}
+
+    def _key(self, ticker: str) -> str:
+        return (ticker or "").upper()
+
+    def peek(self, ticker: str) -> dict[str, Any] | None:
+        key = self._key(ticker)
+        entry = self.cache.get(key)
+        if entry and datetime.utcnow() - entry["timestamp"] < self.ttl:
+            return entry["payload"]
+        return None
+
+    def refresh(self, ticker: str) -> dict[str, Any]:
+        key = self._key(ticker)
+        payload = self._fetch_remote_data(key)
+        self.cache[key] = {"timestamp": datetime.utcnow(), "payload": payload}
+        return payload
+
+    def _fetch_remote_data(self, ticker: str) -> dict[str, Any]:
+        try:
+            stock = yf.Ticker(ticker)
+            fast_info = getattr(stock, "fast_info", {}) or {}
+            try:
+                info = stock.info or {}
+            except Exception:
+                info = {}
+            try:
+                news = list(getattr(stock, "news", []) or [])
+            except Exception:
+                news = []
+        except Exception as exc:
+            fast_info = {}
+            info = {"shortName": ticker.upper()}
+            news = []
+            fallback_snapshot = {
+                "symbol": ticker.upper(),
+                "status": "Data issue",
+                "error": str(exc),
+                "name": ticker.upper(),
+                "price": None,
+                "change": None,
+                "change_pct": None,
+                "volume": None,
+                "volume_label": "",
+                "time": datetime.now().strftime("%b %d - %H:%M"),
+                "range": None,
+            }
+            return {
+                "ticker": ticker,
+                "fast_info": fast_info,
+                "info": info,
+                "news": news,
+                "snapshot": fallback_snapshot,
+                "fetched_at": datetime.utcnow().isoformat()
+            }
+        snapshot = build_snapshot(ticker, fast_info, info)
+        return {
+            "ticker": ticker,
+            "fast_info": fast_info,
+            "info": info,
+            "news": news,
+            "snapshot": snapshot,
+            "fetched_at": datetime.utcnow().isoformat()
+        }
 
 
 def hex_to_rgb(hex_color: str) -> tuple[int, int, int]:
@@ -337,7 +533,7 @@ class WorkspaceDock(QDockWidget):
                                 QEvent.Type.MouseButtonRelease,
                                 QEvent.Type.MouseMove):
                 QApplication.sendEvent(self, event)
-                return False
+                return True
         return super().eventFilter(obj, event)
 
     def event(self, event):
@@ -411,18 +607,36 @@ class WorkspaceDock(QDockWidget):
         return parent if isinstance(parent, QMainWindow) else None
 
     def _hide_native_tab_bars(self):
-        container = self.parentWidget()
+        container = self._tab_container_widget()
+        if not container:
+            return
         visited = set()
+        for tabbar in container.findChildren(QTabBar):
+            if tabbar in visited:
+                continue
+            visited.add(tabbar)
+            if self._tabbar_belongs_to_dock_content(tabbar):
+                continue
+            tabbar.setVisible(False)
+            tabbar.setMaximumHeight(0)
+            tabbar.setMinimumHeight(0)
+            tabbar.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+
+    def _tab_container_widget(self) -> QWidget | None:
+        container = self.parentWidget()
         while container:
-            for tabbar in container.findChildren(QTabBar):
-                if tabbar in visited:
-                    continue
-                visited.add(tabbar)
-                tabbar.setVisible(False)
-                tabbar.setMaximumHeight(0)
-                tabbar.setMinimumHeight(0)
-                tabbar.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+            if container.metaObject().className().startswith("QDockWidgetGroupWindow"):
+                return container
             container = container.parentWidget()
+        return None
+
+    def _tabbar_belongs_to_dock_content(self, tabbar: QTabBar) -> bool:
+        ancestor = tabbar.parentWidget()
+        while ancestor:
+            if isinstance(ancestor, QDockWidget):
+                return True
+            ancestor = ancestor.parentWidget()
+        return False
 
     def _collect_tab_cluster(self) -> list["WorkspaceDock"]:
         main = self._main_window()
@@ -480,47 +694,87 @@ class WorkspaceDock(QDockWidget):
         target.activateWindow()
 
 
-class StatPill(QFrame):
-    """Small stat widget used in the hero section."""
+class QuoteMetricCell(QFrame):
+    """Compact textual metric row for the quote header grid."""
 
     def __init__(self, label: str):
         super().__init__()
-        self.setObjectName("StatPill")
+        self.setObjectName("QuoteMetric")
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(14, 10, 14, 10)
+        layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(2)
 
         self.label = QLabel(label.upper())
-        self.label.setObjectName("StatLabel")
+        self.label.setObjectName("QuoteMetricLabel")
         self.value = QLabel("--")
-        self.value.setObjectName("StatValue")
-        self.subtext = QLabel("")
-        self.subtext.setObjectName("StatSubtext")
+        self.value.setObjectName("QuoteMetricValue")
+        self.hint = QLabel("")
+        self.hint.setObjectName("QuoteMetricHint")
 
         layout.addWidget(self.label)
         layout.addWidget(self.value)
-        layout.addWidget(self.subtext)
+        layout.addWidget(self.hint)
 
-    def set_value(self, text: str):
-        self.value.setText(text)
+    def set_value(self, text: str | None):
+        self.value.setText(text or "--")
 
-    def set_subtext(self, text: str):
-        self.subtext.setText(text)
+    def set_hint(self, text: str | None):
+        self.hint.setText(text or "")
 
-    def set_trend(self, trend: str | None):
-        self.setProperty("trend", trend or "")
-        self.style().unpolish(self)
-        self.style().polish(self)
+    def set_label(self, text: str):
+        self.label.setText(text.upper())
+
+
+class HeroMicroPanel(QFrame):
+    """Small contextual card used alongside the hero quote widget."""
+
+    def __init__(self, title: str, caption: str):
+        super().__init__()
+        self.setObjectName("HeroMicroPanel")
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 14, 16, 14)
+        layout.setSpacing(6)
+
+        self.title = QLabel(title.upper())
+        self.title.setObjectName("MicroTitle")
+        self.primary = QLabel("--")
+        self.primary.setObjectName("MicroPrimary")
+        self.meta = QLabel(caption)
+        self.meta.setObjectName("MicroMeta")
+
+        layout.addWidget(self.title)
+        layout.addWidget(self.primary)
+        layout.addWidget(self.meta)
+
+    def set_primary(self, text: str):
+        self.primary.setText(text or "--")
+
+    def set_meta(self, text: str):
+        self.meta.setText(text or "")
+
+    def set_title(self, text: str):
+        self.title.setText(text.upper())
 
 
 class QuoteWidget(QFrame):
-    """Headline card showcasing the active ticker and quick controls."""
+    """Headline card showcasing the active ticker in a Webull-inspired layout."""
+
+    INTERVAL_OPTIONS = [
+        ("1m", "1"),
+        ("5m", "5"),
+        ("15m", "15"),
+        ("1h", "60"),
+        ("4h", "240"),
+        ("1D", "D"),
+    ]
 
     def __init__(self, interval_callback):
         super().__init__()
         self.interval_callback = interval_callback
         self.setObjectName("QuoteCard")
         self.active_interval = None
+        self.currency = "USD"
+        self.brand_color = None
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 20, 24, 20)
@@ -530,63 +784,239 @@ class QuoteWidget(QFrame):
         self.header_frame.setObjectName("ModuleHeader")
         header_layout = QHBoxLayout(self.header_frame)
         header_layout.setContentsMargins(0, 0, 0, 0)
-        header_layout.setSpacing(12)
-
-        self.ticker_label = QLabel("--")
-        self.ticker_label.setObjectName("QuoteTicker")
-        self.subtitle_label = QLabel("Pick a ticker from the watchlist to get started.")
-        self.subtitle_label.setObjectName("QuoteSubtitle")
+        header_layout.setSpacing(16)
 
         title_stack = QVBoxLayout()
-        title_stack.setSpacing(2)
-        title_stack.addWidget(self.ticker_label)
-        title_stack.addWidget(self.subtitle_label)
+        title_stack.setSpacing(6)
 
-        header_layout.addLayout(title_stack)
-        header_layout.addStretch()
+        self.symbol_label = QLabel("--")
+        self.symbol_label.setObjectName("QuoteSymbol")
+        self.company_label = QLabel("Pick a ticker from the watchlist to get started.")
+        self.company_label.setObjectName("QuoteCompany")
 
-        self.status_badge = QLabel("Status: --")
-        self.status_badge.setObjectName("StatusBadge")
-        header_layout.addWidget(self.status_badge)
+        meta_row = QHBoxLayout()
+        meta_row.setSpacing(8)
+        self.exchange_badge = QLabel("—")
+        self.exchange_badge.setObjectName("QuoteExchange")
+        self.session_badge = QLabel("STATUS")
+        self.session_badge.setObjectName("QuoteSession")
+        self.timestamp_label = QLabel("--")
+        self.timestamp_label.setObjectName("QuoteTimestamp")
+        meta_row.addWidget(self.exchange_badge)
+        meta_row.addWidget(self.session_badge)
+        meta_row.addWidget(self.timestamp_label)
+        meta_row.addStretch()
+
+        title_stack.addWidget(self.symbol_label)
+        title_stack.addWidget(self.company_label)
+        title_stack.addLayout(meta_row)
+
+        header_layout.addLayout(title_stack, stretch=1)
+
+        actions = QHBoxLayout()
+        actions.setSpacing(8)
+        self.watch_button = self._build_action_button("★ Watch", "Add to watch bucket")
+        self.alert_button = self._build_action_button("⏰ Alert", "Set price alert (coming soon)")
+        actions.addWidget(self.watch_button)
+        actions.addWidget(self.alert_button)
+        header_layout.addLayout(actions, stretch=0)
 
         layout.addWidget(self.header_frame)
 
-        stats_row = QHBoxLayout()
-        stats_row.setSpacing(BASE_SPACING)
+        price_row = QHBoxLayout()
+        price_row.setSpacing(BASE_SPACING)
 
-        self.stat_widgets = {
-            "price": StatPill("Last Price"),
-            "change": StatPill("Session Change"),
-            "volume": StatPill("Volume"),
-            "range": StatPill("Range"),
-        }
-        for pill in self.stat_widgets.values():
-            stats_row.addWidget(pill)
+        price_stack = QVBoxLayout()
+        price_stack.setSpacing(4)
+        main_price = QHBoxLayout()
+        main_price.setSpacing(12)
+        self.price_label = QLabel("--")
+        self.price_label.setObjectName("QuotePrice")
+        self.change_label = QLabel("--")
+        self.change_label.setObjectName("QuoteChange")
+        self.change_pct_label = QLabel("--")
+        self.change_pct_label.setObjectName("QuoteChangePct")
+        main_price.addWidget(self.price_label)
+        main_price.addWidget(self.change_label)
+        main_price.addWidget(self.change_pct_label)
+        main_price.addStretch()
+        price_stack.addLayout(main_price)
 
-        layout.addLayout(stats_row)
+        self.premarket_label = QLabel("Pre: --")
+        self.premarket_label.setObjectName("QuotePremarket")
+        price_stack.addWidget(self.premarket_label)
 
-        self.brand_color = None
+        price_row.addLayout(price_stack, stretch=2)
+
+        self.interval_frame = QFrame()
+        self.interval_frame.setObjectName("IntervalSelector")
+        interval_layout = QHBoxLayout(self.interval_frame)
+        interval_layout.setContentsMargins(0, 0, 0, 0)
+        interval_layout.setSpacing(6)
+        self.interval_buttons: dict[str, QPushButton] = {}
+        for label, code in self.INTERVAL_OPTIONS:
+            btn = QPushButton(label)
+            btn.setObjectName("TimeframeButton")
+            btn.setCheckable(True)
+            btn.clicked.connect(lambda checked=False, value=code: self._on_interval_clicked(value))
+            interval_layout.addWidget(btn)
+            self.interval_buttons[code] = btn
+        price_row.addWidget(self.interval_frame, stretch=0)
+
+        layout.addLayout(price_row)
+
+        metrics_frame = QFrame()
+        metrics_frame.setObjectName("QuoteMetricGrid")
+        metrics_layout = QGridLayout(metrics_frame)
+        metrics_layout.setContentsMargins(0, 8, 0, 0)
+        metrics_layout.setHorizontalSpacing(32)
+        metrics_layout.setVerticalSpacing(10)
+
+        metric_definitions = [
+            ("open", "Open"),
+            ("day_high", "Day High"),
+            ("day_low", "Day Low"),
+            ("prev_close", "Prev Close"),
+            ("volume", "Volume"),
+            ("avg_volume", "Avg Vol"),
+            ("market_cap", "Market Cap"),
+            ("pe_ratio", "P/E"),
+            ("fifty_two_week_high", "52W High"),
+            ("fifty_two_week_low", "52W Low"),
+            ("dividend_yield", "Dividend"),
+            ("shares_outstanding", "Shares Out"),
+        ]
+        self.metric_cells: dict[str, QuoteMetricCell] = {}
+        for idx, (key, label) in enumerate(metric_definitions):
+            cell = QuoteMetricCell(label)
+            row = idx // 4
+            col = idx % 4
+            metrics_layout.addWidget(cell, row, col)
+            self.metric_cells[key] = cell
+        layout.addWidget(metrics_frame)
+
+        micro_row = QHBoxLayout()
+        micro_row.setSpacing(BASE_SPACING)
+        self.filing_panel = HeroMicroPanel("Latest Filing", "Awaiting SEC feed")
+        self.event_panel = HeroMicroPanel("Next Event", "Macro calendar humming")
+        micro_row.addWidget(self.filing_panel)
+        micro_row.addWidget(self.event_panel)
+        layout.addLayout(micro_row)
+
         self.set_active_interval("60")
-        self.apply_brand_color(None)
+        self.show_loading("--")
+
+    def _build_action_button(self, label: str, tooltip: str) -> QToolButton:
+        btn = QToolButton()
+        btn.setObjectName("UtilityButton")
+        btn.setText(label)
+        btn.setToolTip(tooltip)
+        btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn.setAutoRaise(False)
+        btn.setCheckable(False)
+        btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        return btn
+
+    def _on_interval_clicked(self, interval: str):
+        self.set_active_interval(interval)
+        if self.interval_callback:
+            self.interval_callback(interval)
+
+    def _set_trend(self, widgets: list[QWidget], trend: str | None):
+        for widget in widgets:
+            widget.setProperty("trend", trend or "")
+            widget.style().unpolish(widget)
+            widget.style().polish(widget)
+
+    def _format_currency(self, value: Any, decimals: int = 2) -> str:
+        if value is None:
+            return "--"
+        try:
+            amount = f"{float(value):,.{decimals}f}"
+        except (TypeError, ValueError):
+            return "--"
+        symbol = CURRENCY_SYMBOLS.get(self.currency.upper(), self.currency.upper())
+        if len(symbol) == 1 and not symbol.isalpha():
+            return f"{symbol}{amount}"
+        if len(symbol) == 1:
+            return f"{symbol}{amount}"
+        return f"{symbol} {amount}"
+
+    def _format_number(self, value: Any, decimals: int = 2) -> str:
+        try:
+            return f"{float(value):,.{decimals}f}"
+        except (TypeError, ValueError):
+            return "--"
+
+    def _format_compact(self, value: Any) -> str:
+        try:
+            num = float(value)
+        except (TypeError, ValueError):
+            return "--"
+        for suffix, threshold in (("T", 1e12), ("B", 1e9), ("M", 1e6), ("K", 1e3)):
+            if abs(num) >= threshold:
+                return f"{num / threshold:.2f}{suffix}"
+        return f"{num:,.0f}"
+
+    def _set_metric(self, key: str, value: Any, formatter: Callable[[Any], str] | None = None,
+                    hint: str | None = None):
+        cell = self.metric_cells.get(key)
+        if not cell:
+            return
+        if value is None:
+            cell.set_value("--")
+            cell.set_hint("")
+            return
+        if formatter:
+            try:
+                text = formatter(value)
+            except Exception:
+                text = str(value)
+        else:
+            text = str(value)
+        cell.set_value(text or "--")
+        cell.set_hint(hint or "")
 
     def apply_brand_color(self, color: str | None):
         self.brand_color = color
         if color:
             text_color = ideal_text_color(color)
-            self.status_badge.setStyleSheet(
-                f"background-color: {color}; color: {text_color}; padding: 6px 14px; border-radius: 0px;"
+            self.session_badge.setStyleSheet(
+                f"background-color: {color}; color: {text_color}; padding: 4px 14px; "
+                f"border-radius: 999px; border: 1px solid {color};"
             )
-            self.status_badge.setVisible(True)
-            for pill in self.stat_widgets.values():
-                pill.setStyleSheet(f"QFrame#StatPill{{ border: 1px solid {color}; }}")
+            self.filing_panel.setStyleSheet(f"QFrame#HeroMicroPanel{{ border: 1px solid {color}; }}")
+            self.event_panel.setStyleSheet(f"QFrame#HeroMicroPanel{{ border: 1px solid {color}; }}")
         else:
-            self.status_badge.setStyleSheet("background: transparent; border: none; padding: 0; color: inherit;")
-            self.status_badge.setVisible(False)
-            for pill in self.stat_widgets.values():
-                pill.setStyleSheet("")
+            self.session_badge.setStyleSheet("")
+            self.filing_panel.setStyleSheet("")
+            self.event_panel.setStyleSheet("")
+
+    def show_loading(self, ticker: str):
+        display = (ticker or "--").upper()
+        self.apply_brand_color(None)
+        self.symbol_label.setText(display)
+        self.company_label.setText("Fetching live data...")
+        self.exchange_badge.setText("—")
+        self.session_badge.setText("LOADING")
+        self.timestamp_label.setText("--:--")
+        self.price_label.setText("--")
+        self.change_label.setText("--")
+        self.change_pct_label.setText("--")
+        self.premarket_label.setText("Pre: --")
+        self._set_trend([self.change_label, self.change_pct_label, self.premarket_label], "")
+        for cell in self.metric_cells.values():
+            cell.set_value("--")
+            cell.set_hint("")
+        self.filing_panel.set_primary("Loading...")
+        self.filing_panel.set_meta("")
+        self.event_panel.set_primary("Loading...")
+        self.event_panel.set_meta("")
 
     def set_active_interval(self, interval: str):
         self.active_interval = interval
+        for code, button in self.interval_buttons.items():
+            button.setChecked(code == interval)
 
     def set_tab_mode(self, tabbed: bool):
         if hasattr(self, "header_frame"):
@@ -599,69 +1029,111 @@ class QuoteWidget(QFrame):
         change = snapshot.get("change")
         change_pct = snapshot.get("change_pct")
         volume = snapshot.get("volume")
-        range_text = snapshot.get("range")
         status = snapshot.get("status") or "Live"
+        currency = (snapshot.get("currency") or "USD").upper()
 
-        self.ticker_label.setText(symbol)
-        self.subtitle_label.setText(name)
-        self.status_badge.setText(self._format_status(status))
+        self.currency = currency
+        self.symbol_label.setText(symbol)
+        self.company_label.setText(name)
+        exchange = snapshot.get("exchange") or "Global"
+        self.exchange_badge.setText(exchange.upper())
+        self.session_badge.setText(self._format_status(status))
+        self.timestamp_label.setText(snapshot.get("time") or "--")
 
         if price is not None:
-            self.stat_widgets["price"].set_value(f"${price:,.2f}")
+            self.price_label.setText(self._format_currency(price))
         else:
-            self.stat_widgets["price"].set_value("--")
-        self.stat_widgets["price"].set_subtext(snapshot.get("time") or "")
+            self.price_label.setText("--")
 
         if change is not None and change_pct is not None:
             sign = "+" if change >= 0 else "-"
-            self.stat_widgets["change"].set_value(f"{sign}${abs(change):,.2f}")
-            self.stat_widgets["change"].set_subtext(f"{sign}{abs(change_pct):.2f}% session")
+            self.change_label.setText(f"{sign}{self._format_number(abs(change), 2)}")
+            self.change_pct_label.setText(f"{sign}{abs(change_pct):.2f}%")
             trend = "positive" if change >= 0 else "negative"
-            self.stat_widgets["change"].set_trend(trend)
+            self._set_trend([self.change_label, self.change_pct_label], trend)
         else:
-            self.stat_widgets["change"].set_value("--")
-            self.stat_widgets["change"].set_subtext("No data")
-            self.stat_widgets["change"].set_trend("")
+            self.change_label.setText("--")
+            self.change_pct_label.setText("--")
+            self._set_trend([self.change_label, self.change_pct_label], "")
 
-        if volume is not None:
-            try:
-                vol_value = float(volume)
-                if abs(vol_value) >= 1_000_000:
-                    volume_display = f"{vol_value/1_000_000:.2f}M"
-                else:
-                    volume_display = f"{vol_value:,.0f}"
-            except (TypeError, ValueError):
-                volume_display = str(volume)
-            self.stat_widgets["volume"].set_value(volume_display)
-            self.stat_widgets["volume"].set_subtext(snapshot.get("volume_label", "Latest"))
+        pre_price = snapshot.get("pre_price")
+        pre_change = snapshot.get("pre_change")
+        pre_change_pct = snapshot.get("pre_change_pct")
+        pre_label = snapshot.get("pre_status") or "Pre"
+        if pre_price is not None and pre_change is not None and pre_change_pct is not None:
+            sign = "+" if pre_change >= 0 else "-"
+            label = (
+                f"{pre_label}: {self._format_currency(pre_price)} "
+                f"{sign}{self._format_number(abs(pre_change), 2)} "
+                f"({sign}{abs(pre_change_pct):.2f}%)"
+            )
+            if snapshot.get("pre_time"):
+                label += f" • {snapshot['pre_time']}"
+            self.premarket_label.setText(label)
+            self._set_trend([self.premarket_label], "positive" if pre_change >= 0 else "negative")
         else:
-            self.stat_widgets["volume"].set_value("--")
-            self.stat_widgets["volume"].set_subtext("No data")
+            self.premarket_label.setText("Pre: --")
+            self._set_trend([self.premarket_label], "")
 
-        if range_text:
-            self.stat_widgets["range"].set_value(range_text)
-            self.stat_widgets["range"].set_subtext(snapshot.get("range_label", "52W range"))
-        else:
-            self.stat_widgets["range"].set_value("--")
-            self.stat_widgets["range"].set_subtext("")
+        self._set_metric("open", snapshot.get("open"), lambda v: self._format_currency(v))
+        self._set_metric("day_high", snapshot.get("day_high"), lambda v: self._format_currency(v))
+        self._set_metric("day_low", snapshot.get("day_low"), lambda v: self._format_currency(v))
+        self._set_metric("prev_close", snapshot.get("prev_close"), lambda v: self._format_currency(v))
+        self._set_metric("volume", volume, self._format_compact, snapshot.get("volume_label", "Volume"))
+        self._set_metric("avg_volume", snapshot.get("avg_volume"), self._format_compact, "Avg 10D")
+        self._set_metric("market_cap", snapshot.get("market_cap"), self._format_compact)
+        self._set_metric("pe_ratio", snapshot.get("pe_ratio"), lambda v: self._format_number(v, 2))
+        self._set_metric(
+            "fifty_two_week_high",
+            snapshot.get("fifty_two_week_high"),
+            lambda v: self._format_currency(v),
+        )
+        self._set_metric(
+            "fifty_two_week_low",
+            snapshot.get("fifty_two_week_low"),
+            lambda v: self._format_currency(v),
+        )
+        self._set_metric(
+            "dividend_yield",
+            snapshot.get("dividend_yield"),
+            lambda v: f"{float(v) * 100:.2f}%",
+        )
+        self._set_metric("shares_outstanding", snapshot.get("shares_outstanding"), self._format_compact)
+
+        self._update_context_cards(symbol)
 
     def _format_status(self, raw_status: str) -> str:
         status = (raw_status or "").strip().lower().replace("_", " ")
         if status.startswith("pre"):
-            return "Status: Pre-market"
+            return "PRE"
         if status.startswith("post") or status.startswith("after"):
-            return "Status: After hours"
+            return "POST"
         if status.startswith("live") or status.startswith("regular"):
-            return "Status: Open"
+            return "OPEN"
         if status.startswith("close"):
-            return "Status: Closed"
-        if not status:
-            return "Status: --"
-        return f"Status: {raw_status.title()}"
+            return "CLOSED"
+        return (raw_status or "--").upper()
+
+    def _update_context_cards(self, ticker: str):
+        now = datetime.now()
+        filing_title = f"{ticker} 10-Q draft" if ticker not in ("--", "") else "Awaiting selection"
+        filing_meta = f"Mock summary • {now.strftime('%b %d, %I:%M %p')}"
+        event_title = "CPI (USD)" if ticker not in ("--", "") else "Macro outlook"
+        event_meta = "Est. release in 02h 10m"
+        self.set_latest_filing(filing_title, filing_meta)
+        self.set_next_event(event_title, event_meta)
+
+    def set_latest_filing(self, title: str | None, meta: str | None):
+        self.filing_panel.set_primary(title or "No filings queued")
+        self.filing_panel.set_meta(meta or "EDGAR feed pending")
+
+    def set_next_event(self, title: str | None, meta: str | None):
+        self.event_panel.set_primary(title or "No macro events")
+        self.event_panel.set_meta(meta or "All clear")
 
 
-class MarketClockWidget(QWidget):
-    """Displays market time and open/closed status with timezone selector."""
+class MarketPulseWidget(QFrame):
+    """Combined market clock + session pulse chip for the header."""
 
     MARKETS = {
         "New York (NYSE)": {
@@ -689,40 +1161,66 @@ class MarketClockWidget(QWidget):
 
     def __init__(self):
         super().__init__()
-        self.setObjectName("ClockCard")
+        self.setObjectName("MarketPulse")
         self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(12, 8, 12, 8)
-        layout.setSpacing(4)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(18, 12, 18, 12)
+        layout.setSpacing(16)
+
+        left_col = QVBoxLayout()
+        left_col.setSpacing(4)
+        status_row = QHBoxLayout()
+        status_row.setSpacing(6)
+        self.status_chip = QLabel("PRE")
+        self.status_chip.setObjectName("PulseStatus")
+        self.market_label = QLabel("NYSE · America/New_York")
+        self.market_label.setObjectName("PulseMeta")
+        status_row.addWidget(self.status_chip)
+        status_row.addWidget(self.market_label)
+        status_row.addStretch()
+        left_col.addLayout(status_row)
+
+        self.transition_label = QLabel("Opens in --:--:--")
+        self.transition_label.setObjectName("PulseMeta")
+        left_col.addWidget(self.transition_label)
+
+        layout.addLayout(left_col)
+
+        clock_col = QVBoxLayout()
+        clock_col.setSpacing(2)
+        self.clock_label = QLabel("--:--:--")
+        self.clock_label.setObjectName("PulseClock")
+        self.date_label = QLabel("-- ---")
+        self.date_label.setObjectName("PulseMeta")
+        clock_col.addWidget(self.clock_label)
+        clock_col.addWidget(self.date_label)
+        layout.addLayout(clock_col)
 
         self.selector = QComboBox()
-        self.selector.setObjectName("ClockSelector")
+        self.selector.setObjectName("PulseSelector")
         for name in self.MARKETS:
             self.selector.addItem(name)
-        self.selector.currentIndexChanged.connect(self.update_time)
+        self.selector.currentIndexChanged.connect(self.update_pulse)
         layout.addWidget(self.selector)
 
-        self.time_label = QLabel("--:--:--")
-        self.time_label.setObjectName("ClockTime")
-        self.status_label = QLabel("Status: --")
-        self.status_label.setObjectName("ClockStatus")
-        layout.addWidget(self.time_label)
-        layout.addWidget(self.status_label)
-
         self.timer = QTimer(self)
-        self.timer.timeout.connect(self.update_time)
+        self.timer.timeout.connect(self.update_pulse)
         self.timer.start(1_000)
-        self.update_time()
+        self.update_pulse()
 
-    def update_time(self):
-        market = self.MARKETS[self.selector.currentText()]
+    def update_pulse(self):
+        market_name = self.selector.currentText()
+        market = self.MARKETS[market_name]
         tz = ZoneInfo(market["tz"])
         now = datetime.now(tz)
-        self.time_label.setText(now.strftime("%H:%M:%S"))
-        status = self._determine_status(now, market)
-        self.status_label.setText(f"{status} - {now.strftime('%b %d')}")
+        status, meta = self._determine_status(now, market)
+        self.status_chip.setText(status.upper())
+        self.market_label.setText(f"{market_name.split('(')[0].strip()} · {market['tz']}")
+        self.transition_label.setText(meta)
+        self.clock_label.setText(now.strftime("%H:%M:%S"))
+        self.date_label.setText(now.strftime("%b %d"))
 
-    def _determine_status(self, now: datetime, market: dict) -> str:
+    def _determine_status(self, now: datetime, market: dict) -> tuple[str, str]:
         open_dt = now.replace(hour=market["open"].hour, minute=market["open"].minute,
                               second=0, microsecond=0)
         close_dt = now.replace(hour=market["close"].hour, minute=market["close"].minute,
@@ -731,12 +1229,23 @@ class MarketClockWidget(QWidget):
         after_end = close_dt + market["after"]
 
         if pre_start <= now < open_dt:
-            return "Pre-market"
+            return "pre", f"Opens in {self._format_delta(open_dt - now)}"
         if open_dt <= now <= close_dt:
-            return "Open"
+            return "open", f"Closes in {self._format_delta(close_dt - now)}"
         if close_dt < now <= after_end:
-            return "After hours"
-        return "Closed"
+            return "post", f"After-hours ends in {self._format_delta(after_end - now)}"
+
+        if now < pre_start:
+            return "closed", f"Next session in {self._format_delta(pre_start - now)}"
+        # rolled into next day
+        return "closed", f"Next session in {self._format_delta((pre_start + timedelta(days=1)) - now)}"
+
+    def _format_delta(self, delta: timedelta) -> str:
+        total_seconds = max(int(delta.total_seconds()), 0)
+        hours = total_seconds // 3600
+        minutes = (total_seconds % 3600) // 60
+        seconds = total_seconds % 60
+        return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
 class ChartWidget(QWidget):
     """Standalone chart widget (TradingView embed)."""
@@ -878,34 +1387,51 @@ class FundamentalsWidget(QWidget):
         self.table.verticalHeader().setVisible(False)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         layout.addWidget(self.table)
+        self._show_placeholder("Pick a ticker to load fundamentals.")
 
-    def load_ticker(self, ticker: str):
+    def load_ticker(self, ticker: str, payload: dict | None = None):
+        if not payload or not payload.get("info"):
+            self._show_placeholder("Loading fundamentals...")
+            return
+        info = payload.get("info") or {}
+        dividend_yield = info.get("dividendYield")
+        metrics = [
+            ("Market Cap", self._format_number(info.get("marketCap"), dollar=True)),
+            ("P/E Ratio", self._format_number(info.get("trailingPE"))),
+            ("Forward P/E", self._format_number(info.get("forwardPE"))),
+            ("EPS", self._format_number(info.get("trailingEps"), dollar=True)),
+            ("Dividend Yield", f"{dividend_yield * 100:.2f}%" if dividend_yield else "N/A"),
+            ("52 Week High", self._format_number(info.get("fiftyTwoWeekHigh"), dollar=True)),
+            ("52 Week Low", self._format_number(info.get("fiftyTwoWeekLow"), dollar=True)),
+            ("Volume (Avg)", self._format_number(info.get("averageVolume"))),
+            ("Beta", self._format_number(info.get("beta"))),
+        ]
+        self.table.setRowCount(len(metrics))
+        for row, (metric, value) in enumerate(metrics):
+            self.table.setItem(row, 0, QTableWidgetItem(str(metric)))
+            self.table.setItem(row, 1, QTableWidgetItem(str(value)))
+
+    def _show_placeholder(self, message: str):
+        self.table.setRowCount(1)
+        self.table.setItem(0, 0, QTableWidgetItem("Status"))
+        self.table.setItem(0, 1, QTableWidgetItem(message))
+
+    def _format_number(self, value: Any, dollar: bool = False) -> str:
+        if value in (None, "N/A"):
+            return "N/A"
         try:
-            stock = yf.Ticker(ticker)
-            info = stock.info
-            
-            metrics = [
-                ("Market Cap", info.get("marketCap", "N/A")),
-                ("P/E Ratio", info.get("trailingPE", "N/A")),
-                ("Forward P/E", info.get("forwardPE", "N/A")),
-                ("EPS", info.get("trailingEps", "N/A")),
-                ("Dividend Yield", f"{info.get('dividendYield', 0) * 100:.2f}%" if info.get('dividendYield') else "N/A"),
-                ("52 Week High", f"${info.get('fiftyTwoWeekHigh', 'N/A')}"),
-                ("52 Week Low", f"${info.get('fiftyTwoWeekLow', 'N/A')}"),
-                ("Volume (Avg)", info.get("averageVolume", "N/A")),
-                ("Beta", info.get("beta", "N/A")),
-            ]
-            
-            self.table.setRowCount(len(metrics))
-            for row, (metric, value) in enumerate(metrics):
-                self.table.setItem(row, 0, QTableWidgetItem(str(metric)))
-                self.table.setItem(row, 1, QTableWidgetItem(str(value)))
-        
-        except Exception as e:
-            self.table.setRowCount(1)
-            self.table.setItem(0, 0, QTableWidgetItem("Error"))
-            self.table.setItem(0, 1, QTableWidgetItem(str(e)))
-    
+            num = float(value)
+        except (TypeError, ValueError):
+            return str(value)
+        suffixes = [(1_000_000_000_000, "T"), (1_000_000_000, "B"), (1_000_000, "M")]
+        for threshold, suffix in suffixes:
+            if abs(num) >= threshold:
+                formatted = f"{num / threshold:.2f}{suffix}"
+                return f"${formatted}" if dollar else formatted
+        if dollar:
+            return f"${num:,.2f}"
+        return f"{num:,.2f}"
+
     def set_tab_mode(self, tabbed: bool):
         if hasattr(self, "header_frame"):
             self.header_frame.setVisible(not tabbed)
@@ -935,26 +1461,175 @@ class NewsWidget(QWidget):
         self.news_list = QListWidget()
         self.news_list.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         layout.addWidget(self.news_list)
+        self.news_list.addItem("Pick a ticker to load news.")
 
-    def load_ticker(self, ticker: str):
+    def load_ticker(self, ticker: str, payload: dict | None = None):
         self.news_list.clear()
+        if not payload:
+            self.news_list.addItem("Loading headlines...")
+            return
+        news_items = list(payload.get("news") or [])[:12]
+        if not news_items:
+            self.news_list.addItem("No recent news.")
+            return
+        for item in news_items:
+            title = item.get("title", "No title")
+            timestamp = item.get("providerPublishTime")
+            badge = self._format_timestamp(timestamp)
+            source = item.get("source") or item.get("provider", {}).get("name", "")
+            meta = f"{badge} · {source}".strip(" ·")
+            self.news_list.addItem(f"[{meta}] {title}")
+
+    def _format_timestamp(self, timestamp: Any) -> str:
         try:
-            stock = yf.Ticker(ticker)
-            news = stock.news[:12]
-            for item in news:
-                title = item.get("title", "No title")
-                timestamp = item.get("providerPublishTime", 0)
-                date_str = datetime.fromtimestamp(timestamp).strftime("%b %d")
-                self.news_list.addItem(f"[{date_str}] {title}")
-            if not news:
-                self.news_list.addItem("No recent news.")
-        except Exception as e:
-            self.news_list.addItem(f"Error loading news: {str(e)}")
+            ts = float(timestamp)
+        except (TypeError, ValueError):
+            return "--"
+        return datetime.fromtimestamp(ts).strftime("%b %d")
 
     def set_tab_mode(self, tabbed: bool):
         if hasattr(self, "header_frame"):
             self.header_frame.setVisible(not tabbed)
 
+
+class SecFilingsWidget(QWidget):
+    """Placeholder SEC filings console with mock data."""
+
+    def __init__(self):
+        super().__init__()
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(BASE_SPACING, BASE_SPACING, BASE_SPACING, BASE_SPACING)
+        layout.setSpacing(BASE_SPACING)
+
+        self.header_frame = QFrame()
+        header_layout = QVBoxLayout(self.header_frame)
+        header_layout.setContentsMargins(0, 0, 0, 0)
+        header_layout.setSpacing(2)
+        title = QLabel("SEC Filings")
+        title.setObjectName("SectionTitle")
+        subtitle = QLabel("8-K, 10-Q, 10-K feeds inspired by Perplexity.")
+        subtitle.setObjectName("SectionHint")
+        header_layout.addWidget(title)
+        header_layout.addWidget(subtitle)
+        layout.addWidget(self.header_frame)
+
+        self.table = QTableWidget()
+        self.table.setColumnCount(3)
+        self.table.setHorizontalHeaderLabels(["Type", "Summary", "Filed"])
+        self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.verticalHeader().setVisible(False)
+        self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        layout.addWidget(self.table)
+
+        self.latest_summary = ("Awaiting SEC feed", "—")
+        self.setLayout(layout)
+
+    def load_ticker(self, ticker: str):
+        filings = self._mock_filings(ticker)
+        self.table.setRowCount(len(filings))
+        for row, entry in enumerate(filings):
+            self.table.setItem(row, 0, QTableWidgetItem(entry["type"]))
+            self.table.setItem(row, 1, QTableWidgetItem(entry["title"]))
+            self.table.setItem(row, 2, QTableWidgetItem(entry["time"]))
+        if filings:
+            self.latest_summary = (f"{filings[0]['type']} · {filings[0]['title']}", filings[0]["time"])
+        else:
+            self.latest_summary = ("No filings surfaced", "Check EDGAR feed")
+
+    def get_latest_summary(self) -> tuple[str, str]:
+        return self.latest_summary
+
+    def _mock_filings(self, ticker: str) -> list[dict]:
+        base = datetime.utcnow()
+        templates = [
+            ("8-K", f"{ticker} announces product update", "Operations"),
+            ("10-Q", f"{ticker} quarterly report highlights margin shift", "Financial"),
+            ("SC 13G", f"Passive stake filed in {ticker}", "Ownership"),
+        ]
+        filings = []
+        for idx, (ftype, title, _) in enumerate(templates):
+            stamp = (base - timedelta(hours=idx * 3)).strftime("%b %d • %H:%M UTC")
+            filings.append({"type": ftype, "title": title, "time": stamp})
+        return filings
+
+    def set_tab_mode(self, tabbed: bool):
+        if hasattr(self, "header_frame"):
+            self.header_frame.setVisible(not tabbed)
+
+
+class MacroCalendarWidget(QWidget):
+    """ForexFactory-style macro events placeholder."""
+
+    def __init__(self):
+        super().__init__()
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(BASE_SPACING, BASE_SPACING, BASE_SPACING, BASE_SPACING)
+        layout.setSpacing(BASE_SPACING)
+
+        self.header_frame = QFrame()
+        header_layout = QVBoxLayout(self.header_frame)
+        header_layout.setContentsMargins(0, 0, 0, 0)
+        header_layout.setSpacing(2)
+        title = QLabel("Macro Calendar")
+        title.setObjectName("SectionTitle")
+        subtitle = QLabel("ForexFactory-inspired economic pulse.")
+        subtitle.setObjectName("SectionHint")
+        header_layout.addWidget(title)
+        header_layout.addWidget(subtitle)
+        layout.addWidget(self.header_frame)
+
+        self.table = QTableWidget()
+        self.table.setColumnCount(4)
+        self.table.setHorizontalHeaderLabels(["Time", "Event", "Impact", "Ccy"])
+        self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.verticalHeader().setVisible(False)
+        self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        layout.addWidget(self.table)
+
+        self.events: list[dict] = []
+        self.focus_symbol: str | None = None
+        self.refresh_events()
+        self.setLayout(layout)
+
+    def refresh_events(self):
+        base = datetime.utcnow().replace(minute=0, second=0, microsecond=0)
+        sample = [
+            {"title": "CPI (YoY)", "currency": "USD", "impact": "High", "offset": 2},
+            {"title": "ECB Press Conference", "currency": "EUR", "impact": "High", "offset": 5},
+            {"title": "PMI Manufacturing", "currency": "CNY", "impact": "Medium", "offset": 8},
+        ]
+        self.events = []
+        self.table.setRowCount(len(sample))
+        for row, event in enumerate(sample):
+            ts = base + timedelta(hours=event["offset"])
+            self.events.append({**event, "datetime": ts})
+            self.table.setItem(row, 0, QTableWidgetItem(ts.strftime("%H:%M UTC")))
+            self.table.setItem(row, 1, QTableWidgetItem(event["title"]))
+            self.table.setItem(row, 2, QTableWidgetItem(event["impact"]))
+            self.table.setItem(row, 3, QTableWidgetItem(event["currency"]))
+
+    def get_next_event_summary(self) -> tuple[str, str]:
+        now = datetime.utcnow()
+        future = sorted(self.events, key=lambda e: e["datetime"])
+        for event in future:
+            if event["datetime"] >= now:
+                delta = event["datetime"] - now
+                return (f"{event['title']} ({event['currency']})",
+                        f"in {self._format_delta(delta)} · {event['impact']} impact")
+        return ("No macro events", "All clear for next 12h")
+
+    def set_focus(self, ticker: str):
+        self.focus_symbol = ticker
+
+    def _format_delta(self, delta: timedelta) -> str:
+        total_seconds = max(int(delta.total_seconds()), 0)
+        hours = total_seconds // 3600
+        minutes = (total_seconds % 3600) // 60
+        return f"{hours}h {minutes}m"
+
+    def set_tab_mode(self, tabbed: bool):
+        if hasattr(self, "header_frame"):
+            self.header_frame.setVisible(not tabbed)
 
 class ChatbotWidget(QWidget):
     """Context-aware chatbot panel."""
@@ -1300,20 +1975,23 @@ class TradingTerminal(QMainWindow):
         self.current_theme_name = "dark"
         self.theme_button = None
         self.refresh_button = None
-        self.status_badge = None
         self.widget_button = None
+        self.market_pulse = None
         self.quote_widget = None
         self.chart_widget = None
         self.chatbot = None
         self.screener = None
         self.fundamentals_widget = None
         self.news_widget = None
+        self.sec_filings_widget = None
+        self.macro_widget = None
         self.stowed_actions: dict[str, QAction] = {}
         self.widget_link_groups: dict[str, int | None] = {}
         self.link_groups: defaultdict[int, set[str]] = defaultdict(set)
         self.link_group_tickers: dict[int, str] = {}
-        self.snapshot_worker: SnapshotWorker | None = None
-        self.snapshot_workers: list[SnapshotWorker] = []
+        self.latest_payload: dict[str, Any] | None = None
+        self.ticker_cache = TickerDataCache(ttl_seconds=180)
+        self.active_workers: set[SnapshotWorker] = set()
         self.widget_factories: Dict[str, Callable[[], QWidget]] = {}
         self.dock_widgets: Dict[str, WorkspaceDock] = {}
         self.init_ui()
@@ -1347,6 +2025,8 @@ class TradingTerminal(QMainWindow):
             "Fundamentals": lambda: FundamentalsWidget(),
             "News": lambda: NewsWidget(),
             "Copilot": lambda: ChatbotWidget(self.get_context),
+            "SEC Filings": lambda: SecFilingsWidget(),
+            "Macro Calendar": lambda: MacroCalendarWidget(),
         }
 
         self.create_widget_menu()
@@ -1372,17 +2052,23 @@ class TradingTerminal(QMainWindow):
         fundamentals = self.ensure_widget("Fundamentals", Qt.DockWidgetArea.BottomDockWidgetArea)
         news = self.ensure_widget("News", Qt.DockWidgetArea.BottomDockWidgetArea)
         copilot = self.ensure_widget("Copilot", Qt.DockWidgetArea.RightDockWidgetArea)
+        sec = self.ensure_widget("SEC Filings", Qt.DockWidgetArea.RightDockWidgetArea)
+        macro = self.ensure_widget("Macro Calendar", Qt.DockWidgetArea.BottomDockWidgetArea)
 
+        if quotes and chart:
+            self.splitDockWidget(quotes, chart, Qt.Orientation.Vertical)
         if chart and fundamentals:
             self.splitDockWidget(chart, fundamentals, Qt.Orientation.Vertical)
         if fundamentals and news:
             self.tabifyDockWidget(fundamentals, news)
-        if copilot and chart:
-            self.tabifyDockWidget(chart, copilot)
-        if quotes and chart:
-            self.splitDockWidget(quotes, chart, Qt.Orientation.Vertical)
+        if news and macro:
+            self.tabifyDockWidget(news, macro)
         if screener and chart:
             self.splitDockWidget(screener, chart, Qt.Orientation.Horizontal)
+        if chart and copilot:
+            self.splitDockWidget(chart, copilot, Qt.Orientation.Horizontal)
+        if copilot and sec:
+            self.splitDockWidget(copilot, sec, Qt.Orientation.Vertical)
     
     def ensure_widget(self, key: str, area: Qt.DockWidgetArea | None = None):
         """Make sure a widget dock exists and is visible."""
@@ -1454,6 +2140,10 @@ class TradingTerminal(QMainWindow):
             self.chatbot = child
         elif key == "Screener":
             self.screener = child
+        elif key == "SEC Filings":
+            self.sec_filings_widget = child
+        elif key == "Macro Calendar":
+            self.macro_widget = child
         self.widget_link_groups.setdefault(key, None)
 
     def set_widget_link(self, key: str, group: int | None):
@@ -1513,24 +2203,37 @@ class TradingTerminal(QMainWindow):
             dock.toggle_collapsed()
         self.remove_stowed_tab(key)
 
-    def load_widget_ticker(self, key: str, ticker: str, propagate: bool = False):
+    def load_widget_ticker(self, key: str, ticker: str, propagate: bool = False,
+                           payload: dict | None = None):
+        if key in ("Quotes", "Fundamentals", "News") and payload is None:
+            payload = self.ticker_cache.peek(ticker)
         loaded = False
         if key == "Chart" and self.chart_widget:
             self.chart_widget.load_ticker(ticker)
             loaded = True
         elif key == "Fundamentals" and self.fundamentals_widget:
-            self.fundamentals_widget.load_ticker(ticker)
+            self.fundamentals_widget.load_ticker(ticker, payload)
             loaded = True
         elif key == "News" and self.news_widget:
-            self.news_widget.load_ticker(ticker)
+            self.news_widget.load_ticker(ticker, payload)
             loaded = True
         elif key == "Quotes" and self.quote_widget:
-            snapshot = self.fetch_ticker_snapshot(ticker)
-            self.quote_widget.update_snapshot(snapshot)
+            snapshot = payload.get("snapshot") if payload else None
+            if snapshot:
+                self.quote_widget.update_snapshot(snapshot)
+            else:
+                self.quote_widget.show_loading(ticker)
             self.update_brand_accent(ticker)
+            loaded = True
+        elif key == "SEC Filings" and self.sec_filings_widget:
+            self.sec_filings_widget.load_ticker(ticker)
+            loaded = True
+        elif key == "Macro Calendar" and self.macro_widget:
+            self.macro_widget.set_focus(ticker)
             loaded = True
         if propagate:
             self.broadcast_link_update(key, ticker)
+        self._sync_hero_context_cards()
 
     def broadcast_link_update(self, source_key: str, ticker: str):
         group = self.widget_link_groups.get(source_key)
@@ -1554,92 +2257,31 @@ class TradingTerminal(QMainWindow):
         """Manually refresh ticker snapshot data."""
         self.request_snapshot()
 
-    def request_snapshot(self):
-        """Spawn/refresh background worker for ticker quotes."""
-        ticker = self.current_ticker
+    def request_snapshot(self, ticker: str | None = None):
+        """Spawn/refresh background worker for ticker payload (quotes + meta)."""
+        ticker = ticker or self.current_ticker
         if not ticker:
             return
-        worker = SnapshotWorker(lambda: self.fetch_ticker_snapshot(ticker))
-        worker.result_ready.connect(lambda snapshot, w=worker: self.on_snapshot_ready(snapshot, w))
+        worker = SnapshotWorker(lambda: self.ticker_cache.refresh(ticker))
+        self.active_workers.add(worker)
+        worker.result_ready.connect(lambda payload, w=worker: self.on_payload_ready(payload, w))
         worker.finished.connect(lambda w=worker: self.cleanup_worker(w))
-        self.snapshot_worker = worker
-        self.snapshot_workers.append(worker)
         worker.start()
 
-    def on_snapshot_ready(self, snapshot: dict, worker: SnapshotWorker | None = None):
-        if snapshot.get("symbol", "").upper() != (self.current_ticker or "").upper():
+    def on_payload_ready(self, payload: dict, worker: SnapshotWorker | None = None):
+        ticker = (payload or {}).get("ticker", "")
+        if ticker.upper() != (self.current_ticker or "").upper():
             return
-        self.update_snapshot_ui(snapshot)
-        if worker is self.snapshot_worker:
-            self.snapshot_worker = None
+        self.latest_payload = payload
+        self.load_widget_ticker("Quotes", ticker, propagate=False, payload=payload)
+        self.load_widget_ticker("Fundamentals", ticker, payload=payload)
+        self.load_widget_ticker("News", ticker, payload=payload)
+        if worker:
+            self.active_workers.discard(worker)
 
     def cleanup_worker(self, worker: SnapshotWorker):
-        if worker in self.snapshot_workers:
-            self.snapshot_workers.remove(worker)
+        self.active_workers.discard(worker)
         worker.deleteLater()
-
-    def fetch_ticker_snapshot(self, ticker: str) -> dict:
-        """Lightweight ticker overview used by the hero section."""
-        snapshot = {"symbol": ticker.upper()}
-        try:
-            stock = yf.Ticker(ticker)
-            fast_info = getattr(stock, "fast_info", {}) or {}
-            try:
-                info = stock.info
-            except Exception:
-                info = {}
-
-            price = (fast_info.get("last_price") or fast_info.get("lastPrice") or
-                     fast_info.get("lastSalePrice") or info.get("regularMarketPrice") or
-                     info.get("currentPrice"))
-            prev_close = (fast_info.get("previous_close") or fast_info.get("previousClose") or
-                          info.get("previousClose"))
-
-            if price is not None and prev_close is not None:
-                change = price - prev_close
-                change_pct = (change / prev_close) * 100 if prev_close else None
-            else:
-                change = None
-                change_pct = None
-
-            volume = fast_info.get("volume") or info.get("volume") or info.get("averageVolume")
-            high_52 = fast_info.get("yearHigh") or info.get("fiftyTwoWeekHigh")
-            low_52 = fast_info.get("yearLow") or info.get("fiftyTwoWeekLow")
-
-            snapshot.update({
-                "name": info.get("shortName") or info.get("longName") or ticker.upper(),
-                "price": price,
-                "change": change,
-                "change_pct": change_pct,
-                "volume": volume,
-                "volume_label": "Session volume" if fast_info.get("volume") else "Avg volume",
-                "time": datetime.now().strftime("%b %d - %H:%M"),
-            })
-
-            if high_52 and low_52:
-                snapshot["range"] = f"${low_52:,.0f} - ${high_52:,.0f}"
-                snapshot["range_label"] = "52W range"
-            else:
-                snapshot["range"] = None
-
-            snapshot["status"] = self.get_market_status_text(fast_info, info)
-
-        except Exception as exc:
-            snapshot["status"] = "Data issue"
-            snapshot["range"] = None
-            snapshot["error"] = str(exc)
-
-        return snapshot
-
-    def get_market_status_text(self, fast_info: dict, info: dict) -> str:
-        state = (fast_info.get("market_state") or fast_info.get("marketState") or
-                 info.get("marketState") or "Live data")
-        state = str(state).replace("_", " ")
-        return state.title()
-
-    def update_snapshot_ui(self, snapshot: dict):
-        if self.quote_widget:
-            self.quote_widget.update_snapshot(snapshot)
 
     def update_brand_accent(self, ticker: str):
         if not self.quote_widget:
@@ -1655,10 +2297,20 @@ class TradingTerminal(QMainWindow):
                 pastel = soften_color(brand_color, 0.45)
                 accent = mix_colors("#ffffff", pastel, 0.25)
         self.quote_widget.apply_brand_color(accent)
+
+    def _sync_hero_context_cards(self):
+        if not self.quote_widget:
+            return
+        if self.sec_filings_widget:
+            filing_title, filing_meta = self.sec_filings_widget.get_latest_summary()
+            self.quote_widget.set_latest_filing(filing_title, filing_meta)
+        if self.macro_widget:
+            event_title, event_meta = self.macro_widget.get_next_event_summary()
+            self.quote_widget.set_next_event(event_title, event_meta)
     
     def _build_header_button(self, glyph: str, tooltip: str) -> QToolButton:
         btn = QToolButton()
-        btn.setObjectName("UtilityIconButton")
+        btn.setObjectName("HeaderGlyph")
         btn.setText(glyph)
         btn.setToolTip(tooltip)
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -1667,38 +2319,43 @@ class TradingTerminal(QMainWindow):
         btn.setCheckable(False)
         btn.setIcon(QIcon())
         btn.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-        btn.setFixedSize(QSize(36, 36))
+        btn.setFixedSize(QSize(40, 40))
         return btn
     
     def create_header(self):
         header = QFrame()
         header.setObjectName("Header")
         layout = QHBoxLayout(header)
-        layout.setContentsMargins(24, 16, 24, 16)
+        layout.setContentsMargins(24, 12, 24, 12)
+        layout.setSpacing(24)
         
+        title_block = QVBoxLayout()
+        title_block.setSpacing(4)
+        wordmark_row = QHBoxLayout()
+        wordmark_row.setSpacing(8)
         title = QLabel("Mira")
         title.setObjectName("HeaderTitle")
-        subtitle = QLabel("Adaptive Trading Workspace")
+        badge = QLabel("features · experimental")
+        badge.setObjectName("HeaderBadge")
+        wordmark_row.addWidget(title)
+        wordmark_row.addWidget(badge)
+        wordmark_row.addStretch()
+        subtitle = QLabel("Perplexity-grade intelligence for traders")
         subtitle.setObjectName("HeaderSubtitle")
-        title_block = QVBoxLayout()
-        title_block.setSpacing(2)
-        title_block.addWidget(title)
+        title_block.addLayout(wordmark_row)
         title_block.addWidget(subtitle)
-        layout.addLayout(title_block)
+        layout.addLayout(title_block, stretch=1)
 
-        layout.addSpacing(24)
-
-        self.market_clock = MarketClockWidget()
-        self.market_clock.setFixedWidth(220)
-        layout.addWidget(self.market_clock)
+        self.market_pulse = MarketPulseWidget()
+        layout.addWidget(self.market_pulse, stretch=0)
 
         layout.addStretch()
         
-        controls_container = QWidget()
-        controls_container.setObjectName("HeaderControls")
+        controls_container = QFrame()
+        controls_container.setObjectName("HeaderButtons")
         controls_layout = QHBoxLayout(controls_container)
         controls_layout.setContentsMargins(0, 0, 0, 0)
-        controls_layout.setSpacing(4)
+        controls_layout.setSpacing(8)
 
         self.refresh_button = self._build_header_button("↻", "Refresh market data")
         self.refresh_button.clicked.connect(self.refresh_snapshot)
@@ -1734,8 +2391,15 @@ class TradingTerminal(QMainWindow):
         radius = BASE_RADIUS
         spacing = BASE_SPACING
         touch = TOUCH_TARGET
-        quote_gradient = theme['surface']
-        card_radius = 0
+        hero_top = theme.get("hero_top", theme["surface"])
+        hero_bottom = theme.get("hero_bottom", hero_top)
+        quote_gradient = (
+            f"qlineargradient(spread:pad, x1:0, y1:0, x2:1, y2:1,"
+            f" stop:0 {hero_top}, stop:1 {hero_bottom})"
+        )
+        card_radius = 12
+        chip_bg = theme.get("chip_bg", theme["surface"])
+        chip_text = theme.get("chip_text", theme["text"])
         stylesheet = f"""
         QMainWindow {{
             background-color: {theme['window_bg']};
@@ -1759,7 +2423,7 @@ class TradingTerminal(QMainWindow):
             font-weight: 500;
         }}
         QFrame#Header {{
-            background-color: {theme['surface']};
+            background-color: {theme['surface_alt']};
             border: 1px solid {theme['divider']};
             border-radius: {card_radius}px;
         }}
@@ -1772,24 +2436,107 @@ class TradingTerminal(QMainWindow):
             color: {theme['muted']};
             font-size: 13px;
         }}
-        QLabel#QuoteTicker {{
+        QLabel#HeaderBadge {{
+            color: {theme['muted']};
+            font-size: 12px;
+            letter-spacing: 0.08em;
+        }}
+        QLabel#QuoteSymbol {{
             color: {theme['text']};
-            font-size: 28px;
+            font-size: 32px;
             font-weight: 700;
         }}
-        QLabel#QuoteSubtitle {{
+        QLabel#QuoteCompany {{
             color: {theme['muted']};
             font-size: 14px;
+        }}
+        QLabel#QuoteExchange, QLabel#QuoteSession {{
+            color: {theme['muted']};
+            font-size: 11px;
+            letter-spacing: 0.14em;
+            border: 1px solid {theme['divider']};
+            border-radius: {radius}px;
+            padding: 4px 10px;
+        }}
+        QLabel#QuoteTimestamp {{
+            color: {theme['muted']};
+            font-size: 12px;
+        }}
+        QLabel#QuotePrice {{
+            color: {theme['text']};
+            font-size: 42px;
+            font-weight: 700;
+        }}
+        QLabel#QuoteChange, QLabel#QuoteChangePct {{
+            color: {theme['muted']};
+            font-size: 18px;
+            font-weight: 600;
+        }}
+        QLabel#QuotePremarket {{
+            color: {theme['muted']};
+            font-size: 13px;
+        }}
+        QLabel#QuoteChange[trend="positive"], QLabel#QuoteChangePct[trend="positive"], QLabel#QuotePremarket[trend="positive"] {{
+            color: {theme['positive']};
+        }}
+        QLabel#QuoteChange[trend="negative"], QLabel#QuoteChangePct[trend="negative"], QLabel#QuotePremarket[trend="negative"] {{
+            color: {theme['negative']};
         }}
         QFrame#QuoteCard {{
             background: {quote_gradient};
             border: 1px solid {theme['divider']};
             border-radius: {card_radius}px;
         }}
-        QFrame#ClockCard {{
+        QFrame#QuoteMetricGrid {{
+            background-color: transparent;
+            border-top: 1px solid {theme['divider']};
+            margin-top: {spacing}px;
+        }}
+        QFrame#QuoteMetric {{
+            background-color: transparent;
+        }}
+        QLabel#QuoteMetricLabel {{
+            color: {theme['muted']};
+            font-size: 11px;
+            letter-spacing: 0.14em;
+        }}
+        QLabel#QuoteMetricValue {{
+            color: {theme['text']};
+            font-size: 16px;
+            font-weight: 600;
+        }}
+        QLabel#QuoteMetricHint {{
+            color: {theme['muted']};
+            font-size: 12px;
+        }}
+        QFrame#MarketPulse {{
             border: 1px solid {theme['divider']};
             border-radius: {radius}px;
-            background-color: {theme['panel_bg']};
+            background-color: {theme['surface']};
+        }}
+        QLabel#PulseStatus {{
+            font-size: 12px;
+            font-weight: 700;
+            letter-spacing: 0.1em;
+            color: {chip_text};
+            background-color: {chip_bg};
+            border: 1px solid {theme['divider']};
+            border-radius: {radius}px;
+            padding: 2px 10px;
+        }}
+        QLabel#PulseClock {{
+            font-size: 20px;
+            font-weight: 700;
+        }}
+        QLabel#PulseMeta {{
+            color: {theme['muted']};
+            font-size: 12px;
+        }}
+        QComboBox#PulseSelector {{
+            background-color: transparent;
+            color: {theme['text']};
+            border: 1px solid {theme['divider']};
+            padding: 4px 8px;
         }}
         QLabel#SectionTitle {{
             color: {theme['text']};
@@ -1804,12 +2551,6 @@ class TradingTerminal(QMainWindow):
             font-size: 11px;
             color: {theme['muted']};
         }}
-        QComboBox#ClockSelector {{
-            background-color: {theme['panel_bg']};
-            color: {theme['text']};
-            border: 1px solid {theme['divider']};
-            padding: 4px 8px;
-        }}
         QComboBox {{
             background-color: {theme['panel_bg']};
             border: 1px solid {theme['divider']};
@@ -1819,14 +2560,24 @@ class TradingTerminal(QMainWindow):
         QComboBox::drop-down {{
             border: none;
         }}
-        QLabel#StatusBadge {{
-            background-color: {theme['panel_bg']};
-            color: {theme['text']};
-            border-radius: 0px;
-            padding: 6px 14px;
-            font-size: 12px;
-            letter-spacing: 0.08em;
+        QFrame#HeroMicroPanel {{
+            background-color: {theme['surface']};
             border: 1px solid {theme['divider']};
+            border-radius: {card_radius}px;
+        }}
+        QLabel#MicroTitle {{
+            color: {theme['muted']};
+            font-size: 11px;
+            letter-spacing: 0.12em;
+        }}
+        QLabel#MicroPrimary {{
+            color: {theme['text']};
+            font-size: 18px;
+            font-weight: 700;
+        }}
+        QLabel#MicroMeta {{
+            color: {theme['muted']};
+            font-size: 12px;
         }}
         QListWidget {{
             background-color: {theme['surface']};
@@ -1835,41 +2586,16 @@ class TradingTerminal(QMainWindow):
             border-radius: {card_radius}px;
         }}
         QListWidget::item {{
-            padding: 6px;
-            margin-bottom: 2px;
-            border-radius: 0;
-            background-color: transparent;
+            padding: 8px;
+            margin-bottom: 4px;
+            border-radius: 4px;
+            border: 1px solid transparent;
             color: {theme['text']};
         }}
         QListWidget::item:selected {{
-            background-color: {theme['tab_bg']};
-            color: {theme['tab_text']};
-            border: 1px solid {theme['tab_text']};
-        }}
-        QFrame#StatPill {{
-            background-color: {theme['surface']};
-            border: 1px solid {theme['divider']};
-            border-radius: {card_radius}px;
-        }}
-        QLabel#StatLabel {{
-            color: {theme['muted']};
-            font-size: 11px;
-            letter-spacing: 0.12em;
-        }}
-        QLabel#StatValue {{
+            background-color: {theme['surface_alt']};
             color: {theme['text']};
-            font-size: 20px;
-            font-weight: 700;
-        }}
-        QLabel#StatSubtext {{
-            color: {theme['muted']};
-            font-size: 12px;
-        }}
-        QFrame#StatPill[trend="positive"] QLabel#StatValue {{
-            color: #4ade80;
-        }}
-        QFrame#StatPill[trend="negative"] QLabel#StatValue {{
-            color: #f43f5e;
+            border-color: {theme['accent']};
         }}
         QDockWidget {{
             background-color: {theme['panel_bg']};
@@ -1897,8 +2623,9 @@ class TradingTerminal(QMainWindow):
             color: {theme['tab_text']};
         }}
         QToolButton#DockTabButton:checked {{
-            background-color: {theme['tab_text']};
-            color: {theme['panel_bg']};
+            background-color: {theme['accent']};
+            color: {theme['button_text']};
+            border-color: {theme['accent']};
         }}
         QToolButton#DockTabButton[solo="true"] {{
             border-color: {theme['divider']};
@@ -2018,17 +2745,23 @@ class TradingTerminal(QMainWindow):
             color: {theme['button_hover_text']};
             border-color: {theme['accent_hover']};
         }}
-        QToolButton#UtilityIconButton {{
-            background-color: transparent;
-            border: 1px solid {theme['text']};
-            border-radius: 6px;
-            padding: 0;
-            color: {theme['text']};
+        QFrame#HeaderButtons {{
+            background-color: {theme['surface']};
+            border: 1px solid {theme['divider']};
+            border-radius: {card_radius}px;
+            padding: 4px;
         }}
-        QToolButton#UtilityIconButton:hover {{
-            background-color: {theme['accent']};
-            color: {theme['button_text']};
-            border-color: {theme['accent']};
+        QToolButton#HeaderGlyph {{
+            background-color: transparent;
+            border: 1px solid {theme['divider']};
+            border-radius: 8px;
+            color: {theme['text']};
+            font-size: 18px;
+        }}
+        QToolButton#HeaderGlyph:hover {{
+            background-color: {theme['accent_hover']};
+            color: {theme['button_hover_text']};
+            border-color: {theme['accent_hover']};
         }}
         QPushButton#ToggleButton {{
             background-color: transparent;
@@ -2096,8 +2829,9 @@ class TradingTerminal(QMainWindow):
     def on_ticker_selected(self, ticker: str):
         """Handle ticker selection."""
         self.current_ticker = ticker
+        payload = self.ticker_cache.peek(ticker)
         self.update_brand_accent(ticker)
-        self.load_widget_ticker("Quotes", ticker, propagate=True)
+        self.load_widget_ticker("Quotes", ticker, propagate=True, payload=payload)
         if "Chart" not in self.dock_widgets:
             self.ensure_widget("Chart", Qt.DockWidgetArea.RightDockWidgetArea)
         if "Quotes" not in self.dock_widgets:
@@ -2106,12 +2840,18 @@ class TradingTerminal(QMainWindow):
             self.ensure_widget("Fundamentals", Qt.DockWidgetArea.BottomDockWidgetArea)
         if "News" not in self.dock_widgets:
             self.ensure_widget("News", Qt.DockWidgetArea.BottomDockWidgetArea)
+        if "SEC Filings" not in self.dock_widgets:
+            self.ensure_widget("SEC Filings", Qt.DockWidgetArea.RightDockWidgetArea)
+        if "Macro Calendar" not in self.dock_widgets:
+            self.ensure_widget("Macro Calendar", Qt.DockWidgetArea.BottomDockWidgetArea)
         if self.chart_widget:
             self.chart_widget.load_ticker(ticker)
-        if self.fundamentals_widget:
-            self.fundamentals_widget.load_ticker(ticker)
-        if self.news_widget:
-            self.news_widget.load_ticker(ticker)
+        self.load_widget_ticker("Fundamentals", ticker, payload=payload)
+        self.load_widget_ticker("News", ticker, payload=payload)
+        if self.sec_filings_widget:
+            self.sec_filings_widget.load_ticker(ticker)
+        if self.macro_widget:
+            self.macro_widget.set_focus(ticker)
         self.request_snapshot()
         if self.quote_widget and self.chart_widget:
             self.quote_widget.set_active_interval(self.chart_widget.current_interval)
@@ -2120,6 +2860,7 @@ class TradingTerminal(QMainWindow):
             self.refresh_button.setEnabled(True)
         if self.chatbot:
             self.chatbot.add_bot_message(f"Loaded {ticker}. Ask me about its signals or strategy!")
+        self._sync_hero_context_cards()
     
     def get_context(self) -> dict:
         """Get current context for chatbot - enhanced with more details."""

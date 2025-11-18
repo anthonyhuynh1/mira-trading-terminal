@@ -28,3 +28,6 @@
 - Python 3, PyQt6 (Widgets + WebEngine), `yfinance`, TradingView JS embed, strategy analytics module, minimal requirements in `requirements.txt`.
 - Global env tweaks (`QTWEBENGINE_CHROMIUM_FLAGS=--disable-gpu`, `AA_ShareOpenGLContexts`) ensure macOS reliability with WebEngine.
 
+
+
+
