@@ -8,7 +8,26 @@ from datetime import datetime, timedelta, timezone
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-import yfinance as yf
+
+import alpaca_trade_api as tradeapi
+import os
+from alpaca_trade_api.rest import TimeFrame
+from dotenv import load_dotenv
+
+load_dotenv()
+# ----------------------------
+# Alpaca API Configuration
+# ----------------------------
+API_KEY = os.environ.get('APCA_API_KEY_ID')
+SECRET_KEY = os.environ.get('APCA_API_SECRET_KEY')
+BASE_URL = os.environ.get('APCA_API_BASE_URL')
+
+# Check for credentials
+if not all([API_KEY, SECRET_KEY, BASE_URL]):
+    print("Error: Alpaca API credentials (APCA_API_KEY_ID, APCA_API_SECRET_KEY, APCA_API_BASE_URL) are not set in environment variables.")
+    sys.exit(1)
+
+api = tradeapi.REST(API_KEY, SECRET_KEY, base_url=BASE_URL, api_version='v2')
 
 
 # ----------------------------
@@ -19,9 +38,8 @@ TICKERS = [
 ]
 
 # Data
-HOURLY_PERIOD = "180d"   # up to ~730d supported by yfinance for 1h on many tickers
-HOURLY_INTERVAL = "1h"
-DAILY_PERIOD = "365d"
+HOURLY_PERIOD_DAYS = 180   # Number of days of hourly data to fetch
+DAILY_PERIOD_DAYS = 365    # Number of days of daily data to fetch
 
 # Strategy params (v0)
 LOOKBACK_HOURS = 20              # consolidation lookback window
@@ -43,38 +61,32 @@ SHOW_PLOTS = True
 # ----------------------------
 # Data utilities
 # ----------------------------
-def fetch_hourly_data(ticker: str, period: str = HOURLY_PERIOD, interval: str = HOURLY_INTERVAL) -> pd.DataFrame:
-    df = yf.download(ticker, period=period, interval=interval, auto_adjust=True, progress=False)
-    if df is None or df.empty:
+def fetch_hourly_data(ticker: str, period_days: int = HOURLY_PERIOD_DAYS) -> pd.DataFrame:
+    """Fetch hourly data from Alpaca."""
+    start_date = (datetime.now(timezone.utc) - timedelta(days=period_days)).strftime('%Y-%m-%dT%H:%M:%SZ')
+    try:
+        bars = api.get_bars(ticker, TimeFrame.Hour, start=start_date, adjustment='raw').df
+        if bars.empty:
+            return pd.DataFrame()
+        bars.columns = [col.title() for col in bars.columns]
+        return bars
+    except Exception as e:
+        print(f"Error fetching hourly data for {ticker}: {e}")
         return pd.DataFrame()
-    # Handle MultiIndex columns if present
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.droplevel(1)
-    # Normalize column names to title case
-    df.columns = [col.title() if isinstance(col, str) else col for col in df.columns]
-    # Only dropna on columns that exist
-    required_cols = ["Close", "High", "Low", "Open", "Volume"]
-    existing_cols = [col for col in required_cols if col in df.columns]
-    if existing_cols:
-        df = df.dropna(subset=existing_cols)
-    return df
 
 
-def fetch_daily_data(ticker: str, period: str = DAILY_PERIOD) -> pd.DataFrame:
-    df = yf.download(ticker, period=period, interval="1d", auto_adjust=True, progress=False)
-    if df is None or df.empty:
+def fetch_daily_data(ticker: str, period_days: int = DAILY_PERIOD_DAYS) -> pd.DataFrame:
+    """Fetch daily data from Alpaca."""
+    start_date = (datetime.now(timezone.utc) - timedelta(days=period_days)).strftime('%Y-%m-%dT%H:%M:%SZ')
+    try:
+        bars = api.get_bars(ticker, TimeFrame.Day, start=start_date, adjustment='raw').df
+        if bars.empty:
+            return pd.DataFrame()
+        bars.columns = [col.title() for col in bars.columns]
+        return bars
+    except Exception as e:
+        print(f"Error fetching daily data for {ticker}: {e}")
         return pd.DataFrame()
-    # Handle MultiIndex columns if present
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.droplevel(1)
-    # Normalize column names to title case
-    df.columns = [col.title() if isinstance(col, str) else col for col in df.columns]
-    # Only dropna on columns that exist
-    required_cols = ["Close", "High", "Low", "Open", "Volume"]
-    existing_cols = [col for col in required_cols if col in df.columns]
-    if existing_cols:
-        df = df.dropna(subset=existing_cols)
-    return df
 
 
 def fetch_many_hourly(tickers: list[str]) -> dict[str, pd.DataFrame]:
@@ -282,7 +294,7 @@ def scan_setups(tickers: list[str]) -> pd.DataFrame:
         print(f"  Scanning {t} ({i}/{len(tickers)})...", end=" ", flush=True)
         try:
             # For scanner, we only need recent data (30 days is plenty)
-            df = fetch_hourly_data(t, period="30d", interval=HOURLY_INTERVAL)
+            df = fetch_hourly_data(t, period_days=30)
         except Exception as e:
             print(f"(error: {str(e)[:30]})")
             continue

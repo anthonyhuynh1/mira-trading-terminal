@@ -81,7 +81,7 @@ python trading_app.py
 - **PyQt6**: Desktop GUI framework
 - **PyQt6-WebEngine**: Web view for TradingView charts
 - **TradingView Lightweight Charts**: Free, open-source professional charting library
-- **yfinance**: Market data (free)
+- **alpaca-trade-api**: Market data and trading (free for paper trading)
 - **Pandas/NumPy**: Data processing
 
 ## 📝 Project Structure

@@ -7,9 +7,11 @@ import sys
 import warnings
 import colorsys
 from collections import defaultdict
-from functools import partial
 from datetime import datetime, time, timedelta
 from zoneinfo import ZoneInfo
+from dotenv import load_dotenv
+
+load_dotenv()
 warnings.filterwarnings("ignore")
 
 import os
@@ -21,54 +23,32 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QPushButton, QListWidget, QLabel, QTableWidget,
                              QTableWidgetItem, QHeaderView, QDockWidget,
                              QSizePolicy, QFrame, QToolButton, QMenu, QToolBar,
-                             QComboBox, QTabWidget, QSplitter, QStyle, QTabBar)
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QUrl, QSize, QEvent, QObject
-from PyQt6.QtGui import QFont, QAction, QIcon
+                             QComboBox, QTabWidget, QTabBar, QStackedWidget,
+                             QStyle)
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QSize, QEvent
+from PyQt6.QtGui import QFont, QAction, QIcon, QCursor
+from threading import Lock
 from typing import Callable, Dict
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtWebEngineCore import QWebEngineSettings
 
 
-class DockTabBarFilter(QObject):
-    """Hide Qt's built-in dock tab bars so custom headers can render tabs."""
 
-    def __init__(self, parent=None):
-        super().__init__(parent)
-
-    def _is_dock_tabbar(self, obj):
-        if isinstance(obj, QTabBar):
-            return True
-        return bool(getattr(obj, "inherits", lambda *_: False)("QTabBar"))
-
-    def eventFilter(self, obj, event):
-        if self._is_dock_tabbar(obj):
-            parent = obj.parent()
-            dock_related = False
-            while parent is not None:
-                meta = getattr(parent, "metaObject", None)
-                if callable(meta) and "Dock" in meta().className():
-                    dock_related = True
-                    break
-                parent = parent.parent()
-            if dock_related and event.type() in (
-                QEvent.Type.Show,
-                QEvent.Type.ShowToParent,
-                QEvent.Type.Resize,
-                QEvent.Type.Paint,
-                QEvent.Type.Enter,
-            ):
-                obj.setMaximumHeight(0)
-                obj.setMinimumHeight(0)
-                obj.hide()
-                obj.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-                return True
-        return super().eventFilter(obj, event)
-
+import alpaca_trade_api as tradeapi
+from alpaca_trade_api.rest import TimeFrame, APIError
 
 # Import our existing strategy code
 import strategy
-import yfinance as yf
 import numpy as np
+
+
+# Alpaca API global client
+api = tradeapi.REST(
+    os.environ.get('APCA_API_KEY_ID'),
+    os.environ.get('APCA_API_SECRET_KEY'),
+    base_url=os.environ.get('APCA_API_BASE_URL'),
+    api_version='v2'
+)
 
 
 BASE_RADIUS = 12
@@ -110,7 +90,7 @@ THEMES = {
         "button_hover_text": "#000000",
         "input_bg": "#ffffff",
         "tab_bg": "#000000",
-        "tab_text": "#ffffff",
+        "tab_text": "#000000",
         "chart_theme": "light",
         "chart_bg": "#ffffff",
         "chart_toolbar": "#ffffff",
@@ -190,6 +170,150 @@ def ideal_text_color(hex_color: str) -> str:
     return "#000000" if luminance > 150 else "#ffffff"
 
 
+class TickerDataProvider:
+    """Centralized, cache-aware access layer for Alpaca API payloads."""
+
+    SNAPSHOT_TTL = timedelta(seconds=15)
+    FUNDAMENTALS_TTL = timedelta(minutes=8)
+    NEWS_TTL = timedelta(minutes=2)
+
+    def __init__(self):
+        self._lock = Lock()
+        self._snapshot_cache: dict[str, tuple[datetime, dict]] = {}
+        self._fundamentals_cache: dict[str, tuple[datetime, dict]] = {}
+        self._news_cache: dict[str, tuple[datetime, dict]] = {}
+
+    def fetch_snapshot_payload(self, ticker: str) -> dict:
+        symbol = (ticker or "").strip().upper()
+        if not symbol:
+            return {"symbol": "", "status": "No symbol"}
+        cached = self._get_cached(self._snapshot_cache, symbol, self.SNAPSHOT_TTL)
+        if cached:
+            return cached
+        payload = self._build_snapshot(symbol)
+        self._store_cached(self._snapshot_cache, symbol, payload)
+        return payload
+
+    def fetch_fundamentals_payload(self, ticker: str) -> dict:
+        symbol = (ticker or "").strip().upper()
+        if not symbol:
+            return {"ticker": "", "error": "No ticker provided"}
+        cached = self._get_cached(self._fundamentals_cache, symbol, self.FUNDAMENTALS_TTL)
+        if cached:
+            return cached
+        payload = self._build_fundamentals(symbol)
+        self._store_cached(self._fundamentals_cache, symbol, payload)
+        return payload
+
+    def fetch_news_payload(self, ticker: str) -> dict:
+        symbol = (ticker or "").strip().upper()
+        if not symbol:
+            return {"ticker": "", "items": []}
+        cached = self._get_cached(self._news_cache, symbol, self.NEWS_TTL)
+        if cached:
+            return cached
+        payload = self._build_news(symbol)
+        self._store_cached(self._news_cache, symbol, payload)
+        return payload
+
+    def _get_cached(self, cache: dict, symbol: str, ttl: timedelta) -> dict | None:
+        with self._lock:
+            entry = cache.get(symbol)
+            if not entry:
+                return None
+            ts, payload = entry
+            if datetime.utcnow() - ts > ttl:
+                cache.pop(symbol, None)
+                return None
+            return payload
+
+    def _store_cached(self, cache: dict, symbol: str, payload: dict):
+        with self._lock:
+            cache[symbol] = (datetime.utcnow(), payload)
+
+    def _build_snapshot(self, symbol: str) -> dict:
+        snapshot = {"symbol": symbol}
+        print(f"Building snapshot for {symbol}")
+        try:
+            latest_quote = api.get_latest_quote(symbol)
+            asset = api.get_asset(symbol)
+
+            price = latest_quote.ap  # Ask price
+            # Fetch previous day's close for change calculation
+            end_dt = datetime.now(ZoneInfo("UTC")) - timedelta(days=1)
+            start_dt = end_dt - timedelta(days=4) # Go back a few days to ensure we get a trading day
+            prev_day_bars = api.get_bars(symbol, TimeFrame.Day, start=start_dt.strftime('%Y-%m-%d'), end=end_dt.strftime('%Y-%m-%d')).df
+            prev_close = prev_day_bars['close'].iloc[-1] if not prev_day_bars.empty else None
+
+            if price is not None and prev_close is not None:
+                change = price - prev_close
+                change_pct = (change / prev_close) * 100 if prev_close else None
+            else:
+                change = None
+                change_pct = None
+
+            # Get daily volume from latest daily bar
+            latest_daily_bar = api.get_bars(symbol, TimeFrame.Day, limit=1).df
+            volume = latest_daily_bar['volume'].iloc[0] if not latest_daily_bar.empty else None
+            
+            snapshot.update({
+                "name": asset.name,
+                "price": price,
+                "change": change,
+                "change_pct": change_pct,
+                "volume": volume,
+                "volume_label": "Session volume",
+                "time": datetime.now().strftime("%b %d - %H:%M"),
+                "status": "Live Data" if asset.tradable else "Not Tradable",
+            })
+            print(f"Snapshot data for {symbol}: {snapshot}")
+        except APIError as e:
+            snapshot["status"] = "Data issue"
+            snapshot["error"] = str(e)
+            print(f"API Error for {symbol}: {e}")
+        except Exception as exc:
+            snapshot["status"] = "Data issue"
+            snapshot["error"] = str(exc)
+            print(f"Generic Error for {symbol}: {exc}")
+        return snapshot
+
+    def _build_fundamentals(self, symbol: str) -> dict:
+        try:
+            asset = api.get_asset(symbol)
+            metrics = [
+                ("Symbol", asset.symbol),
+                ("Exchange", asset.exchange),
+                ("Asset Class", asset.asset_class),
+                ("Status", asset.status),
+                ("Tradable", asset.tradable),
+                ("Marginable", asset.marginable),
+                ("Shortable", asset.shortable),
+            ]
+            return {"ticker": symbol, "metrics": metrics}
+        except Exception as exc:
+            return {"ticker": symbol, "error": str(exc)}
+
+    def _build_news(self, symbol: str) -> dict:
+        try:
+            news_items = api.get_news(symbol, limit=12)
+            items = []
+            for item in news_items:
+                title = item.headline
+                timestamp = item.created_at
+                date_str = timestamp.strftime("%b %d") if timestamp else "--"
+                items.append(f"[{date_str}] {title}")
+            return {"ticker": symbol, "items": items}
+        except Exception as exc:
+            return {"ticker": symbol, "error": str(exc)}
+
+    @staticmethod
+    def _market_status_text(fast_info: dict, info: dict) -> str:
+        # This method is no longer used with Alpaca, but we keep it for reference
+        # or if we want to re-implement a similar logic based on Alpaca's market status endpoints
+        return "Live Data"
+
+
+
 class SnapshotWorker(QThread):
     """Background worker to fetch ticker snapshots off the UI thread."""
 
@@ -208,17 +332,20 @@ class SnapshotWorker(QThread):
 
 
 class WorkspaceDock(QDockWidget):
-    """Dock widget with custom title bar controls (minimize, float, close)."""
+    """Dock widget with Mira header, inline tabs, and stacked content."""
 
-    closed = pyqtSignal(str)
-    collapsed_changed = pyqtSignal(str, bool)
+    closed = pyqtSignal(object)
+    collapsed_changed = pyqtSignal(object, bool)
+    tab_removed = pyqtSignal(str)
+    tab_added = pyqtSignal(str)
+    active_tab_changed = pyqtSignal(str)
 
-    def __init__(self, key: str, widget: QWidget, content_widget: QWidget | None, parent: QMainWindow,
-                 link_callback: Callable[[str, int | None], None] | None = None):
-        super().__init__(key, parent)
-        self.key = key
-        self.setWidget(widget)
-        self.setObjectName(f"Dock_{key}")
+    def __init__(self, dock_id: str, initial_key: str, widget: QWidget, parent: QMainWindow,
+                 link_callback: Callable[[str, int | None], None] | None = None,
+                 widget_menu_callback: Callable[[object, QWidget | None], None] | None = None):
+        super().__init__(initial_key, parent)
+        self.dock_id = dock_id
+        self.setObjectName(dock_id)
         self.setContentsMargins(0, 0, 0, 0)
         self.setAllowedAreas(Qt.DockWidgetArea.AllDockWidgetAreas)
         self.setFeatures(
@@ -228,10 +355,16 @@ class WorkspaceDock(QDockWidget):
         )
         self.collapsed = False
         self._collapsed_height = 48
-        self._base_title = self.windowTitle()
         self.link_callback = link_callback
-        self._content_widget = content_widget
+        self.widget_menu_callback = widget_menu_callback
+        self._link_group: int | None = None
+        self._options_menu: QMenu | None = None
+        self.tab_widgets: dict[str, QWidget] = {}
+        self.tab_order: list[str] = []
+
         self._init_title_bar()
+        self._init_body()
+        self.add_tab(initial_key, widget, initial_key)
 
     def _init_title_bar(self):
         title_bar = QWidget()
@@ -240,28 +373,45 @@ class WorkspaceDock(QDockWidget):
         layout.setContentsMargins(12, 6, 8, 6)
         layout.setSpacing(6)
 
-        self.tab_strip = QWidget()
-        self.tab_strip.setObjectName("DockTabStrip")
-        self.tab_strip.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-        self.tab_strip_layout = QHBoxLayout(self.tab_strip)
-        self.tab_strip_layout.setContentsMargins(0, 0, 0, 0)
-        self.tab_strip_layout.setSpacing(6)
-        self.tab_strip.hide()
+        self.title_label = QLabel("")
+        self.title_label.setObjectName("DockTitleLabel")
+        self.title_label.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Preferred)
+        layout.addWidget(self.title_label)
 
-        layout.addWidget(self.tab_strip, stretch=1)
+        self.tab_bar = QTabBar()
+        self.tab_bar.setObjectName("DockTabBar")
+        self.tab_bar.setExpanding(False)
+        self.tab_bar.setMovable(True)
+        self.tab_bar.setDrawBase(False)
+        self.tab_bar.setUsesScrollButtons(True)
+        self.tab_bar.currentChanged.connect(self._on_tab_changed)
+        self.tab_bar.tabMoved.connect(self._on_tab_moved)
+        layout.addWidget(self.tab_bar, stretch=1)
+
+        self.menu_btn = self._create_options_button()
+        layout.addWidget(self.menu_btn)
 
         self.min_btn = self._create_icon_button("icons/minimize.svg", self.toggle_collapsed, "Minimize")
         self.expand_btn = self._create_icon_button("icons/expand.svg", self.expand_to_fill, "Expand to fit space")
         self.float_btn = self._create_icon_button("icons/float.svg", self._toggle_floating, "Float / Dock")
-        self.close_btn = self._create_icon_button("icons/close.svg", self.close, "Close")
+        self.close_btn = self._create_icon_button("icons/close.svg", self._handle_close_clicked, "Close")
 
         for btn in (self.min_btn, self.expand_btn, self.float_btn, self.close_btn):
             layout.addWidget(btn)
 
         self.setTitleBarWidget(title_bar)
-        self._title_bar_widget = title_bar
         title_bar.installEventFilter(self)
-        self._sync_tab_state()
+        self._rebuild_options_menu()
+
+    def _init_body(self):
+        body = QFrame()
+        body.setObjectName("DockBody")
+        layout = QVBoxLayout(body)
+        layout.setContentsMargins(BASE_SPACING, BASE_SPACING, BASE_SPACING, BASE_SPACING)
+        layout.setSpacing(BASE_SPACING)
+        self.stack = QStackedWidget()
+        layout.addWidget(self.stack)
+        self.setWidget(body)
 
     def _create_button(self, text: str, handler: Callable, tooltip: str) -> QToolButton:
         btn = QToolButton()
@@ -292,6 +442,141 @@ class WorkspaceDock(QDockWidget):
         btn.setText("")
         return btn
 
+    def _create_options_button(self) -> QToolButton:
+        btn = QToolButton()
+        btn.setObjectName("DockIconButton")
+        btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_TitleBarMenuButton))
+        btn.setToolTip("Widget options")
+        btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn.setFixedSize(QSize(24, 24))
+        return btn
+
+    def _rebuild_options_menu(self):
+        if self._options_menu:
+            self._options_menu.deleteLater()
+        menu = QMenu(self)
+        add_action = menu.addAction("Add Widget…")
+        add_action.triggered.connect(self._handle_add_widget)
+        menu.addSeparator()
+        link_menu = menu.addMenu("Link Group")
+        none_action = link_menu.addAction("No Link")
+        none_action.setCheckable(True)
+        none_action.setChecked(self._link_group is None)
+        none_action.triggered.connect(lambda: self._set_link_group(None))
+        for group in range(1, 7):
+            action = link_menu.addAction(f"Group {group}")
+            action.setCheckable(True)
+            action.setChecked(self._link_group == group)
+            action.triggered.connect(lambda checked=False, g=group: self._set_link_group(g))
+        menu.addSeparator()
+        float_action = menu.addAction("Float / Dock")
+        float_action.triggered.connect(self._toggle_floating)
+        self.menu_btn.setMenu(menu)
+        self._options_menu = menu
+
+    def _handle_add_widget(self):
+        if self.widget_menu_callback:
+            anchor = self.titleBarWidget() or self
+            self.widget_menu_callback(self, anchor)
+
+    def _set_link_group(self, group: int | None):
+        current_key = self.current_tab_key()
+        if current_key and self.link_callback:
+            self.link_callback(current_key, group)
+        self._link_group = group
+        self._rebuild_options_menu()
+
+    def add_tab(self, key: str, widget: QWidget, title: str):
+        if key in self.tab_widgets:
+            self.focus_tab(key)
+            return
+        widget.setParent(self.stack)
+        self.stack.addWidget(widget)
+        tab_index = self.tab_bar.addTab(title)
+        self.tab_bar.setTabData(tab_index, key)
+        self.tab_widgets[key] = widget
+        self.tab_order.insert(tab_index, key)
+        self.tab_bar.setCurrentIndex(tab_index)
+        self.tab_added.emit(key)
+        self._update_title_label()
+
+    def take_tab(self, key: str) -> QWidget | None:
+        idx = self._index_for_key(key)
+        if idx is None:
+            return None
+        return self._remove_tab_at(idx, delete=False, emit_signal=False)
+
+    def focus_tab(self, key: str):
+        idx = self._index_for_key(key)
+        if idx is None:
+            return
+        self.tab_bar.setCurrentIndex(idx)
+
+    def current_tab_key(self) -> str | None:
+        idx = self.tab_bar.currentIndex()
+        if idx < 0 or idx >= len(self.tab_order):
+            return None
+        return self.tab_order[idx]
+
+    def list_tab_keys(self) -> list[str]:
+        return list(self.tab_order)
+
+    def is_empty(self) -> bool:
+        return not self.tab_order
+
+    def _index_for_key(self, key: str) -> int | None:
+        try:
+            return self.tab_order.index(key)
+        except ValueError:
+            return None
+
+    def _on_tab_changed(self, index: int):
+        if index < 0:
+            return
+        self.stack.setCurrentIndex(index)
+        self._update_title_label()
+        key = self.current_tab_key()
+        if key:
+            self.active_tab_changed.emit(key)
+
+    def _on_tab_moved(self, from_index: int, to_index: int):
+        if from_index == to_index:
+            return
+        key = self.tab_order.pop(from_index)
+        self.tab_order.insert(to_index, key)
+        widget = self.stack.widget(from_index)
+        self.stack.removeWidget(widget)
+        self.stack.insertWidget(to_index, widget)
+
+    def _remove_tab_at(self, index: int, delete: bool = True, emit_signal: bool = True) -> QWidget | None:
+        if index < 0 or index >= len(self.tab_order):
+            return None
+        key = self.tab_order.pop(index)
+        widget = self.stack.widget(index)
+        self.stack.removeWidget(widget)
+        self.tab_bar.blockSignals(True)
+        self.tab_bar.removeTab(index)
+        self.tab_bar.blockSignals(False)
+        self.tab_widgets.pop(key, None)
+        if emit_signal:
+            self.tab_removed.emit(key)
+        if delete:
+            widget.deleteLater()
+        else:
+            widget.setParent(None)
+        if self.tab_bar.count():
+            next_index = min(index, self.tab_bar.count() - 1)
+            self.tab_bar.setCurrentIndex(next_index)
+        else:
+            QTimer.singleShot(0, self.close)
+        self._update_title_label()
+        return widget
+
+    def _handle_close_clicked(self):
+        idx = self.tab_bar.currentIndex()
+        self._remove_tab_at(idx, delete=True, emit_signal=True)
+
     def toggle_collapsed(self):
         self.set_collapsed(not self.collapsed)
 
@@ -305,7 +590,7 @@ class WorkspaceDock(QDockWidget):
         if not self.collapsed:
             self.setMaximumHeight(16777215)
             self.setMinimumHeight(0)
-        self.collapsed_changed.emit(self.key, self.collapsed)
+        self.collapsed_changed.emit(self, self.collapsed)
 
     def _toggle_floating(self):
         self.setFloating(not self.isFloating())
@@ -320,18 +605,14 @@ class WorkspaceDock(QDockWidget):
         mw.resizeDocks([self], [mw.height()], Qt.Orientation.Vertical)
 
     def closeEvent(self, event):
-        self.closed.emit(self.key)
+        # Always allow close - emit signal so parent can clean up
+        self.closed.emit(self)
         super().closeEvent(event)
 
-    def setWindowTitle(self, title: str):
-        super().setWindowTitle(title)
-        self._base_title = title
-        self._refresh_cluster_tabs()
-
     def eventFilter(self, obj, event):
-        if obj is getattr(self, "_title_bar_widget", None):
+        if obj is self.titleBarWidget():
             if event.type() == QEvent.Type.MouseButtonDblClick and event.button() == Qt.MouseButton.LeftButton:
-                self.show_link_menu()
+                self._toggle_floating()
                 return True
             if event.type() in (QEvent.Type.MouseButtonPress,
                                 QEvent.Type.MouseButtonRelease,
@@ -340,144 +621,22 @@ class WorkspaceDock(QDockWidget):
                 return False
         return super().eventFilter(obj, event)
 
-    def event(self, event):
-        watched = [
-            QEvent.Type.ParentChange,
-            QEvent.Type.ShowToParent,
-            QEvent.Type.ZOrderChange,
-            QEvent.Type.LayoutRequest,
-        ]
-        dock_change = getattr(QEvent.Type, "DockWidgetAreaChange", None)
-        if dock_change:
-            watched.append(dock_change)
-        if event.type() in watched:
-            QTimer.singleShot(0, self._sync_tab_state)
-        return super().event(event)
-
     def set_link_group_display(self, group: int | None):
         self._link_group = group
-        self._refresh_cluster_tabs()
+        self._update_title_label()
+        self._rebuild_options_menu()
 
-    def show_link_menu(self):
-        if not self.link_callback:
+    def _update_title_label(self):
+        if not hasattr(self, "title_label"):
             return
-        menu = QMenu(self)
-        none_action = menu.addAction("No Link")
-        none_action.triggered.connect(lambda: self.link_callback(self.key, None))
-        menu.addSeparator()
-        for group in range(1, 7):
-            action = menu.addAction(f"Group {group}")
-            action.triggered.connect(lambda checked=False, g=group: self.link_callback(self.key, g))
-        anchor = self.tab_strip if self.tab_strip.isVisible() else self._title_bar_widget
-        menu.exec(anchor.mapToGlobal(anchor.rect().bottomLeft()))
-
-    def _is_tabbed(self) -> bool:
-        parent = self.parentWidget()
-        while parent:
-            if parent.metaObject().className().startswith("QDockWidgetGroupWindow"):
-                return True
-            parent = parent.parentWidget()
-        return False
-
-    def _sync_tab_state(self):
-        tabbed = self._is_tabbed()
-        if getattr(self, "_title_bar_widget", None):
-            self._title_bar_widget.setProperty("tabbed", tabbed)
-            self._title_bar_widget.style().unpolish(self._title_bar_widget)
-            self._title_bar_widget.style().polish(self._title_bar_widget)
-        self._refresh_cluster_tabs()
-        if getattr(self, "_content_widget", None) and hasattr(self._content_widget, "set_tab_mode"):
-            self._content_widget.set_tab_mode(tabbed)
-
-    def _clear_tab_strip(self):
-        if not hasattr(self, "tab_strip_layout"):
-            return
-        while self.tab_strip_layout.count():
-            item = self.tab_strip_layout.takeAt(0)
-            widget = item.widget()
-            if widget:
-                widget.deleteLater()
-
-    def _display_title(self) -> str:
-        title = self._base_title
-        if getattr(self, "_link_group", None):
-            title = f"{title} · #{self._link_group}"
-        return title
-
-    def _main_window(self):
-        parent = self.parent()
-        while parent and not isinstance(parent, QMainWindow):
-            parent = parent.parent()
-        return parent if isinstance(parent, QMainWindow) else None
-
-    def _hide_native_tab_bars(self):
-        container = self.parentWidget()
-        visited = set()
-        while container:
-            for tabbar in container.findChildren(QTabBar):
-                if tabbar in visited:
-                    continue
-                visited.add(tabbar)
-                tabbar.setVisible(False)
-                tabbar.setMaximumHeight(0)
-                tabbar.setMinimumHeight(0)
-                tabbar.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-            container = container.parentWidget()
-
-    def _collect_tab_cluster(self) -> list["WorkspaceDock"]:
-        main = self._main_window()
-        if not main:
-            return [self]
-        cluster = [self]
-        for dock in main.tabifiedDockWidgets(self):
-            if isinstance(dock, WorkspaceDock):
-                cluster.append(dock)
-        ordered: list[WorkspaceDock] = []
-        for dock in cluster:
-            if dock not in ordered:
-                ordered.append(dock)
-        return ordered
-
-    def _refresh_cluster_tabs(self):
-        if not hasattr(self, "tab_strip"):
-            return
-        cluster = self._collect_tab_cluster()
-        tabbed = len(cluster) > 1
-        if tabbed:
-            self._hide_native_tab_bars()
-        active = next((dock for dock in cluster if dock.isVisible()), cluster[0])
-        for dock in cluster:
-            dock._apply_tab_ui(cluster, active, tabbed)
-
-    def _apply_tab_ui(self, cluster: list["WorkspaceDock"], active: "WorkspaceDock", tabbed: bool):
-        if not hasattr(self, "tab_strip"):
-            return
-        self.tab_strip.show()
-        self._clear_tab_strip()
-        multi = len(cluster) > 1
-        for dock in cluster:
-            btn = QToolButton()
-            btn.setObjectName("DockTabButton")
-            btn.setText(dock._display_title())
-            btn.setProperty("solo", not multi)
-            if multi:
-                btn.setCheckable(True)
-                btn.setChecked(dock is active)
-                btn.clicked.connect(partial(self._activate_tab, dock))
-                btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            else:
-                btn.setCheckable(False)
-                btn.setCursor(Qt.CursorShape.ArrowCursor)
-                btn.setEnabled(False)
-            self.tab_strip_layout.addWidget(btn)
-        self.tab_strip_layout.addStretch()
-
-    def _activate_tab(self, target: "WorkspaceDock"):
-        if not target:
-            return
-        target.raise_()
-        target.show()
-        target.activateWindow()
+        text = self.current_tab_key() or ""
+        if self._link_group:
+            text = f"{text} · #{self._link_group}"
+        display = text.upper()
+        # Hide title label when tabs exist (tabs show the names)
+        self.title_label.setVisible(self.tab_bar.count() == 0)
+        self.title_label.setText(display)
+        super().setWindowTitle(display)
 
 
 class StatPill(QFrame):
@@ -591,6 +750,17 @@ class QuoteWidget(QFrame):
     def set_tab_mode(self, tabbed: bool):
         if hasattr(self, "header_frame"):
             self.header_frame.setVisible(not tabbed)
+
+    def show_loading(self, ticker: str):
+        symbol = (ticker or "--").upper()
+        self.ticker_label.setText(symbol)
+        self.subtitle_label.setText("Fetching latest snapshot...")
+        self.status_badge.setText("Loading...")
+        self.status_badge.setVisible(True)
+        for pill in self.stat_widgets.values():
+            pill.set_value("--")
+            pill.set_subtext("Loading")
+            pill.set_trend("")
 
     def update_snapshot(self, snapshot: dict):
         symbol = snapshot.get("symbol") or "--"
@@ -853,8 +1023,9 @@ class ChartWidget(QWidget):
 class FundamentalsWidget(QWidget):
     """Standalone fundamentals table widget."""
 
-    def __init__(self):
+    def __init__(self, data_provider: TickerDataProvider):
         super().__init__()
+        self.data_provider = data_provider
         layout = QVBoxLayout(self)
         layout.setContentsMargins(BASE_SPACING, BASE_SPACING, BASE_SPACING, BASE_SPACING)
         layout.setSpacing(BASE_SPACING)
@@ -879,32 +1050,56 @@ class FundamentalsWidget(QWidget):
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         layout.addWidget(self.table)
 
+        self._pending_ticker: str | None = None
+        self._workers: list[SnapshotWorker] = []
+
     def load_ticker(self, ticker: str):
-        try:
-            stock = yf.Ticker(ticker)
-            info = stock.info
-            
-            metrics = [
-                ("Market Cap", info.get("marketCap", "N/A")),
-                ("P/E Ratio", info.get("trailingPE", "N/A")),
-                ("Forward P/E", info.get("forwardPE", "N/A")),
-                ("EPS", info.get("trailingEps", "N/A")),
-                ("Dividend Yield", f"{info.get('dividendYield', 0) * 100:.2f}%" if info.get('dividendYield') else "N/A"),
-                ("52 Week High", f"${info.get('fiftyTwoWeekHigh', 'N/A')}"),
-                ("52 Week Low", f"${info.get('fiftyTwoWeekLow', 'N/A')}"),
-                ("Volume (Avg)", info.get("averageVolume", "N/A")),
-                ("Beta", info.get("beta", "N/A")),
-            ]
-            
-            self.table.setRowCount(len(metrics))
-            for row, (metric, value) in enumerate(metrics):
-                self.table.setItem(row, 0, QTableWidgetItem(str(metric)))
-                self.table.setItem(row, 1, QTableWidgetItem(str(value)))
-        
-        except Exception as e:
-            self.table.setRowCount(1)
-            self.table.setItem(0, 0, QTableWidgetItem("Error"))
-            self.table.setItem(0, 1, QTableWidgetItem(str(e)))
+        ticker = (ticker or "").strip().upper()
+        if not ticker:
+            return
+        self._pending_ticker = ticker
+        self._show_loading_state()
+        self._run_async_task(lambda t=ticker: self._fetch_fundamentals(t), self._apply_fundamentals_payload)
+
+    def _run_async_task(self, fetcher: Callable[[], dict], handler: Callable[[dict], None]):
+        worker = SnapshotWorker(fetcher)
+        worker.result_ready.connect(handler)
+        worker.finished.connect(lambda w=worker: self._finalize_worker(w))
+        self._workers.append(worker)
+        worker.start()
+
+    def _finalize_worker(self, worker: SnapshotWorker):
+        if worker in self._workers:
+            self._workers.remove(worker)
+        worker.deleteLater()
+
+    def _show_loading_state(self):
+        self.table.setRowCount(1)
+        self.table.setItem(0, 0, QTableWidgetItem("Loading"))
+        self.table.setItem(0, 1, QTableWidgetItem("Fetching fundamentals..."))
+
+    def _fetch_fundamentals(self, ticker: str) -> dict:
+        if not self.data_provider:
+            return {"ticker": ticker, "error": "Data provider unavailable"}
+        return self.data_provider.fetch_fundamentals_payload(ticker)
+
+    def _apply_fundamentals_payload(self, payload: dict):
+        ticker = payload.get("ticker")
+        if self._pending_ticker and ticker != self._pending_ticker:
+            return
+        if payload.get("error"):
+            self._display_error(payload["error"])
+            return
+        metrics = payload.get("metrics", [])
+        self.table.setRowCount(len(metrics))
+        for row, (metric, value) in enumerate(metrics):
+            self.table.setItem(row, 0, QTableWidgetItem(str(metric)))
+            self.table.setItem(row, 1, QTableWidgetItem(str(value)))
+
+    def _display_error(self, message: str):
+        self.table.setRowCount(1)
+        self.table.setItem(0, 0, QTableWidgetItem("Error"))
+        self.table.setItem(0, 1, QTableWidgetItem(message))
     
     def set_tab_mode(self, tabbed: bool):
         if hasattr(self, "header_frame"):
@@ -914,8 +1109,9 @@ class FundamentalsWidget(QWidget):
 class NewsWidget(QWidget):
     """Standalone news list widget."""
 
-    def __init__(self):
+    def __init__(self, data_provider: TickerDataProvider):
         super().__init__()
+        self.data_provider = data_provider
         layout = QVBoxLayout(self)
         layout.setContentsMargins(BASE_SPACING, BASE_SPACING, BASE_SPACING, BASE_SPACING)
         layout.setSpacing(BASE_SPACING)
@@ -936,20 +1132,56 @@ class NewsWidget(QWidget):
         self.news_list.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         layout.addWidget(self.news_list)
 
+        self._pending_ticker: str | None = None
+        self._workers: list[SnapshotWorker] = []
+
     def load_ticker(self, ticker: str):
+        ticker = (ticker or "").strip().upper()
+        if not ticker:
+            return
+        self._pending_ticker = ticker
+        self._show_loading_state()
+        self._run_async_task(lambda t=ticker: self._fetch_news(t), self._apply_news_payload)
+
+    def _run_async_task(self, fetcher: Callable[[], dict], handler: Callable[[dict], None]):
+        worker = SnapshotWorker(fetcher)
+        worker.result_ready.connect(handler)
+        worker.finished.connect(lambda w=worker: self._finalize_worker(w))
+        self._workers.append(worker)
+        worker.start()
+
+    def _finalize_worker(self, worker: SnapshotWorker):
+        if worker in self._workers:
+            self._workers.remove(worker)
+        worker.deleteLater()
+
+    def _show_loading_state(self):
         self.news_list.clear()
-        try:
-            stock = yf.Ticker(ticker)
-            news = stock.news[:12]
-            for item in news:
-                title = item.get("title", "No title")
-                timestamp = item.get("providerPublishTime", 0)
-                date_str = datetime.fromtimestamp(timestamp).strftime("%b %d")
-                self.news_list.addItem(f"[{date_str}] {title}")
-            if not news:
-                self.news_list.addItem("No recent news.")
-        except Exception as e:
-            self.news_list.addItem(f"Error loading news: {str(e)}")
+        self.news_list.addItem("Loading headlines...")
+
+    def _fetch_news(self, ticker: str) -> dict:
+        if not self.data_provider:
+            return {"ticker": ticker, "error": "Data provider unavailable"}
+        return self.data_provider.fetch_news_payload(ticker)
+
+    def _apply_news_payload(self, payload: dict):
+        ticker = payload.get("ticker")
+        if self._pending_ticker and ticker != self._pending_ticker:
+            return
+        if payload.get("error"):
+            self._display_error(payload["error"])
+            return
+        entries = payload.get("items", [])
+        self.news_list.clear()
+        if not entries:
+            self.news_list.addItem("No recent news.")
+            return
+        for entry in entries:
+            self.news_list.addItem(entry)
+
+    def _display_error(self, message: str):
+        self.news_list.clear()
+        self.news_list.addItem(f"Error loading news: {message}")
 
     def set_tab_mode(self, tabbed: bool):
         if hasattr(self, "header_frame"):
@@ -1035,150 +1267,176 @@ class ChatbotWidget(QWidget):
         """Add bot message to chat."""
         self.chat_display.append(f"<b>Assistant:</b> {msg}")
     
-    def generate_response(self, user_msg: str, context: dict) -> str:
-        """Generate chatbot response based on user message and context."""
-        msg_lower = user_msg.lower()
-        ticker = context.get("ticker", "N/A")
-        
-        # Signal explanations
-        if "false breakout" in msg_lower or "false" in msg_lower:
-            return f"""A **false breakout** occurs when price breaks above the consolidation high but on **low volume** (< 25th percentile).
-
-This suggests:
-- Liquidity was taken (stops above consolidation)
-- Lack of follow-through (low volume)
-- Likely to reverse back into consolidation
-
-For {ticker}, this could be a **short opportunity** if confirmed."""
-        
-        if "true breakout" in msg_lower or "breakout" in msg_lower:
-            return f"""A **true breakout** happens when price breaks above consolidation high with **high volume** (>= 75th percentile).
-
-This indicates:
-- Strong buying pressure
-- Likely continuation move
-- Good entry for long positions
-
-The strategy enters long on true breakouts with a stop at consolidation low and 2R target."""
-        
-        if "consolidation" in msg_lower:
-            return f"""**Consolidation** is when price trades in a tight range (<= 2% of mean price) over the lookback period ({strategy.LOOKBACK_HOURS} hours).
-
-For {ticker}, consolidation bands show:
-- **Green line**: Consolidation high (resistance)
-- **Red line**: Consolidation low (support)
-
-When price breaks above the green line with volume, it's a breakout signal."""
-        
-        if "strategy" in msg_lower or "how does" in msg_lower:
-            return f"""**Consolidation + Breakout + Volume Strategy**
-
-1. **Identify Consolidation**: Price in tight range (<= 2% over {strategy.LOOKBACK_HOURS} hours)
-2. **Wait for Breakout**: Price breaks above consolidation high
-3. **Check Volume**: 
-   - High volume (>= 75th percentile) = True breakout (long)
-   - Low volume (< 25th percentile) = False breakout (short opportunity)
-4. **Enter**: Stop at consolidation low, target at 2R
-
-Currently analyzing: {ticker}"""
-        
-        if "backtest" in msg_lower:
-            return f"""I can run a backtest! The strategy uses:
-- Risk: {strategy.RISK_FRACTION*100}% per trade
-- R:R: {strategy.RR_TARGET}:1
-- Stop: Consolidation low
-- Target: Entry + {strategy.RR_TARGET}R
-
-Would you like me to backtest {ticker} or the full universe?"""
-        
-        if "volume" in msg_lower:
-            return f"""Volume analysis uses **dynamic thresholds** based on each stock's own distribution:
-- **High volume**: >= 75th percentile (green bars)
-- **Low volume**: < 25th percentile (red bars)
-- **Normal**: Between thresholds (gray bars)
-
-This adapts to each stock's volume profile - a high-volume stock like TSLA has different thresholds than a low-volume stock."""
-        
-        # Enhanced context-aware responses
-        if ticker != "N/A":
-            if "what" in msg_lower and ("signal" in msg_lower or "showing" in msg_lower):
-                # Get current signal status with more detail
-                try:
-                    df = strategy.fetch_hourly_data(ticker, period="30d")
-                    if not df.empty:
-                        sigs = strategy.breakout_volume_signals(df)
-                        last_sig = sigs.iloc[-1]
-                        current_price = df["Close"].iloc[-1]
-                        cons_high = float(last_sig["cons_high_prev"]) if not np.isnan(last_sig["cons_high_prev"]) else None
-                        cons_low = float(last_sig["cons_low_prev"]) if not np.isnan(last_sig["cons_low_prev"]) else None
-                        
-                        if bool(last_sig["false_breakout"]):
-                            return f"""**{ticker} - FALSE BREAKOUT Signal**
-
-Current Price: ${current_price:.2f}
-Consolidation Range: ${cons_low:.2f} - ${cons_high:.2f}
-
-**Analysis:**
-- Price broke above consolidation high but on LOW volume (< 25th percentile)
-- This suggests liquidity was taken but lacks follow-through
-- **Potential short opportunity** if price rejects and returns below ${cons_high:.2f}
-
-**Risk Management:**
-- Stop: Above recent high
-- Target: Back to consolidation low ${cons_low:.2f}"""
-                        
-                        elif bool(last_sig["signal"]):
-                            return f"""**{ticker} - TRUE BREAKOUT Signal**
-
-Current Price: ${current_price:.2f}
-Consolidation Range: ${cons_low:.2f} - ${cons_high:.2f}
-
-**Analysis:**
-- Price broke above consolidation high with HIGH volume (>= 75th percentile)
-- Strong buying pressure indicates continuation
-- **Long entry opportunity**
-
-**Trade Setup:**
-- Entry: Current price or pullback to ${cons_high:.2f}
-- Stop: ${cons_low:.2f} (consolidation low)
-- Target: ${current_price + (current_price - cons_low) * strategy.RR_TARGET:.2f} (2R target)
-- Risk/Reward: 1:{strategy.RR_TARGET}"""
-                        
-                        elif bool(last_sig["cons_ok"]):
-                            breakout_level = float(last_sig["breakout_level"])
-                            dist_pct = ((breakout_level - current_price) / current_price) * 100
-                            return f"""**{ticker} - CONSOLIDATION SETUP**
-
-Current Price: ${current_price:.2f}
-Consolidation Range: ${cons_low:.2f} - ${cons_high:.2f}
-Breakout Level: ${breakout_level:.2f}
-Distance to Breakout: {dist_pct:.2f}%
-
-**Status:** Waiting for breakout
-**Action:** Monitor for volume confirmation when price approaches ${breakout_level:.2f}"""
-                        else:
-                            return f"{ticker} is not showing a setup currently. No consolidation detected in the last {strategy.LOOKBACK_HOURS} hours."
-                except Exception as e:
-                    return f"Error analyzing {ticker}: {str(e)}"
-        
-        # Default response
-        return f"""I understand you're asking about: "{user_msg}"
-
-For {ticker}, I can help with:
-- Explaining signals (true/false breakouts)
-- Strategy mechanics
-- Risk/reward analysis
-- Backtesting
-
-Try asking: "What signal is {ticker} showing?" or "Explain false breakouts" """
+        def generate_response(self, user_msg: str, context: dict) -> str:
+    
+            """Generate chatbot response based on user message and context."""
+    
+            msg_lower = user_msg.lower()
+    
+            ticker = context.get("ticker", "N/A")
+    
+            
+    
+            # Signal explanations
+    
+            if "false breakout" in msg_lower or "false" in msg_lower:
+    
+                return f"""A **false breakout** occurs when price breaks above the consolidation high but on **low volume** (< 25th percentile).
+    
+    
+    
+    This suggests:
+    
+    - Liquidity was taken (stops above consolidation)
+    
+    - Lack of follow-through (low volume)
+    
+    - Likely to reverse back into consolidation
+    
+    
+    
+    For {ticker}, this could be a **short opportunity** if confirmed."""
+    
+            
+    
+            if "true breakout" in msg_lower or "breakout" in msg_lower:
+    
+                return f"""A **true breakout** happens when price breaks above consolidation high with **high volume** (>= 75th percentile).
+    
+    
+    
+    This indicates:
+    
+    - Strong buying pressure
+    
+    - Likely continuation move
+    
+    - Good entry for long positions
+    
+    
+    
+    The strategy enters long on true breakouts with a stop at consolidation low and 2R target."""
+    
+            
+    
+            if "consolidation" in msg_lower:
+    
+                return f"""**Consolidation** is when price trades in a tight range (<= 2% of mean price) over the lookback period ({strategy.LOOKBACK_HOURS} hours).
+    
+    
+    
+    For {ticker}, consolidation bands show:
+    
+    - **Green line**: Consolidation high (resistance)
+    
+    - **Red line**: Consolidation low (support)
+    
+    
+    
+    When price breaks above the green line with volume, it's a breakout signal."""
+    
+            
+    
+            if "strategy" in msg_lower or "how does" in msg_lower:
+    
+                return f"""**Consolidation + Breakout + Volume Strategy**
+    
+    
+    
+    1. **Identify Consolidation**: Price in tight range (<= 2% over {strategy.LOOKBACK_HOURS} hours)
+    
+    2. **Wait for Breakout**: Price breaks above consolidation high
+    
+    3. **Check Volume**: 
+    
+       - High volume (>= 75th percentile) = True breakout (long)
+    
+       - Low volume (< 25th percentile) = False breakout (short opportunity)
+    
+    4. **Enter**: Stop at consolidation low, target at 2R
+    
+    
+    
+    Currently analyzing: {ticker}"""
+    
+            
+    
+            if "backtest" in msg_lower:
+    
+                return f"""I can run a backtest! The strategy uses:
+    
+    - Risk: {strategy.RISK_FRACTION*100}% per trade
+    
+    - R:R: {strategy.RR_TARGET}:1
+    
+    - Stop: Consolidation low
+    
+    - Target: Entry + {strategy.RR_TARGET}R
+    
+    
+    
+    Would you like me to backtest {ticker} or the full universe?"""
+    
+            
+    
+            if "volume" in msg_lower:
+    
+                return f"""Volume analysis uses **dynamic thresholds** based on each stock's own distribution:
+    
+    - **High volume**: >= 75th percentile (green bars)
+    
+    - **Low volume**: < 25th percentile (red bars)
+    
+    - **Normal**: Between thresholds (gray bars)
+    
+    
+    
+    This adapts to each stock's volume profile - a high-volume stock like TSLA has different thresholds than a low-volume stock."""
+    
+            
+    
+            # Enhanced context-aware responses
+    
+            if ticker != "N/A":
+    
+                if "what" in msg_lower and ("signal" in msg_lower or "showing" in msg_lower):
+    
+                    # Get current signal status with more detail
+    
+                    # This is now handled by the main window to be reusable
+    
+                    return self.context_callback(fetch_analysis=True)
+    
+            
+    
+            # Default response
+    
+            return f"""I understand you're asking about: "{user_msg}"
+    
+    
+    
+    For {ticker}, I can help with:
+    
+    - Explaining signals (true/false breakouts)
+    
+    - Strategy mechanics
+    
+    - Risk/reward analysis
+    
+    - Backtesting
+    
+    
+    
+    Try asking: "What signal is {ticker} showing?" or "Explain false breakouts" """
 
 
 class ScreenerWidget(QWidget):
     """Left sidebar: Stock screener and search."""
     
-    def __init__(self, ticker_callback):
+    def __init__(self, ticker_callback, analysis_callback):
         super().__init__()
         self.ticker_callback = ticker_callback  # Callback when ticker selected
+        self.analysis_callback = analysis_callback # Callback to trigger AI analysis
         self.init_ui()
     
     def init_ui(self):
@@ -1245,6 +1503,8 @@ class ScreenerWidget(QWidget):
         
         # Ticker list
         self.ticker_list = QListWidget()
+        self.ticker_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.ticker_list.customContextMenuRequested.connect(self._show_ticker_context_menu)
         self.ticker_list.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.ticker_list.itemClicked.connect(self.on_ticker_selected)
         watchlist_label = QLabel("Watchlist")
@@ -1285,6 +1545,23 @@ class ScreenerWidget(QWidget):
         if text.lower().startswith("scanning"):
             return
         self.ticker_callback(text)
+
+    def _show_ticker_context_menu(self, position):
+        """Show context menu for ticker list."""
+        item = self.ticker_list.itemAt(position)
+        if not item:
+            return
+        
+        ticker = item.text().strip()
+        
+        menu = QMenu()
+        ai_menu = menu.addMenu("AI Copilot")
+        
+        analyze_action = QAction("Analyze Consolidation Breakout", self)
+        analyze_action.triggered.connect(lambda checked, t=ticker: self.analysis_callback(t))
+        ai_menu.addAction(analyze_action)
+        
+        menu.exec(self.ticker_list.mapToGlobal(position))
     
     def set_tab_mode(self, tabbed: bool):
         if hasattr(self, "header_frame"):
@@ -1316,6 +1593,9 @@ class TradingTerminal(QMainWindow):
         self.snapshot_workers: list[SnapshotWorker] = []
         self.widget_factories: Dict[str, Callable[[], QWidget]] = {}
         self.dock_widgets: Dict[str, WorkspaceDock] = {}
+        self.dock_by_id: Dict[str, WorkspaceDock] = {}
+        self.pending_widget_target_dock: WorkspaceDock | None = None
+        self.data_provider = TickerDataProvider()
         self.init_ui()
         self.apply_theme()
     
@@ -1325,7 +1605,6 @@ class TradingTerminal(QMainWindow):
         
         self.setDockNestingEnabled(True)
         self.setDockOptions(
-            QMainWindow.DockOption.AllowTabbedDocks |
             QMainWindow.DockOption.AllowNestedDocks |
             QMainWindow.DockOption.AnimatedDocks |
             QMainWindow.DockOption.GroupedDragging
@@ -1343,9 +1622,9 @@ class TradingTerminal(QMainWindow):
         self.widget_factories = {
             "Quotes": lambda: QuoteWidget(self.handle_interval_change),
             "Chart": lambda: ChartWidget(self.get_current_theme),
-            "Screener": lambda: ScreenerWidget(self.on_ticker_selected),
-            "Fundamentals": lambda: FundamentalsWidget(),
-            "News": lambda: NewsWidget(),
+            "Screener": lambda: ScreenerWidget(self.on_ticker_selected, self.run_and_display_analysis),
+            "Fundamentals": lambda: FundamentalsWidget(self.data_provider),
+            "News": lambda: NewsWidget(self.data_provider),
             "Copilot": lambda: ChatbotWidget(self.get_context),
         }
 
@@ -1360,63 +1639,108 @@ class TradingTerminal(QMainWindow):
         self.widget_menu = QMenu(self)
         for key in self.widget_factories.keys():
             action = self.widget_menu.addAction(key)
-            action.triggered.connect(lambda checked, n=key: self.ensure_widget(n))
+            action.triggered.connect(lambda checked=False, n=key: self.handle_widget_menu_selection(n))
         if self.widget_button:
             self.widget_button.setMenu(self.widget_menu)
             self.widget_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
     
     def create_default_layout(self):
+        # Create primary docks
         quotes = self.ensure_widget("Quotes", Qt.DockWidgetArea.TopDockWidgetArea)
         chart = self.ensure_widget("Chart", Qt.DockWidgetArea.RightDockWidgetArea)
         screener = self.ensure_widget("Screener", Qt.DockWidgetArea.LeftDockWidgetArea)
         fundamentals = self.ensure_widget("Fundamentals", Qt.DockWidgetArea.BottomDockWidgetArea)
-        news = self.ensure_widget("News", Qt.DockWidgetArea.BottomDockWidgetArea)
-        copilot = self.ensure_widget("Copilot", Qt.DockWidgetArea.RightDockWidgetArea)
 
+        # Arrange primary layout
         if chart and fundamentals:
             self.splitDockWidget(chart, fundamentals, Qt.Orientation.Vertical)
-        if fundamentals and news:
-            self.tabifyDockWidget(fundamentals, news)
-        if copilot and chart:
-            self.tabifyDockWidget(chart, copilot)
         if quotes and chart:
             self.splitDockWidget(quotes, chart, Qt.Orientation.Vertical)
         if screener and chart:
             self.splitDockWidget(screener, chart, Qt.Orientation.Horizontal)
+        
+        # Add secondary widgets as tabs
+        if fundamentals:
+            self.add_widget_tab(fundamentals, "News")
+        if chart:
+            self.add_widget_tab(chart, "Copilot")
+
+    def show_widget_menu_at(self, dock: WorkspaceDock | None, anchor: QWidget | None):
+        if not hasattr(self, "widget_menu") or not self.widget_menu:
+            return
+        self.pending_widget_target_dock = dock
+        if anchor:
+            pos = anchor.mapToGlobal(anchor.rect().bottomRight())
+        else:
+            pos = QCursor.pos()
+        self.widget_menu.popup(pos)
+
+    def handle_widget_menu_selection(self, key: str):
+        target = self.pending_widget_target_dock
+        self.pending_widget_target_dock = None
+        if target and isinstance(target, WorkspaceDock):
+            self.add_widget_tab(target, key)
+        else:
+            self.ensure_widget(key)
+
+    def add_widget_tab(self, target_dock: WorkspaceDock, key: str):
+        if not target_dock:
+            return
+        # Find if widget already exists in another dock
+        existing_dock = self.find_dock_for_widget(key)
+        widget = None
+        if existing_dock:
+            if existing_dock is target_dock:
+                target_dock.focus_tab(key)
+                return
+            # Move widget from existing dock to target dock
+            widget = existing_dock.take_tab(key)
+            if existing_dock.is_empty():
+                existing_dock.close()
+        else:
+            # Create new widget instance
+            factory = self.widget_factories.get(key)
+            if not factory:
+                return
+            widget = factory()
+            self.register_widget_instance(key, widget)
+        target_dock.add_tab(key, widget, key)
+        # Update the mapping to point to the new dock
+        self.dock_widgets[key] = target_dock
+        target_dock.set_link_group_display(self.widget_link_groups.get(key))
+        if hasattr(widget, "load_ticker") and self.current_ticker:
+            widget.load_ticker(self.current_ticker)
     
     def ensure_widget(self, key: str, area: Qt.DockWidgetArea | None = None):
         """Make sure a widget dock exists and is visible."""
-        if key in self.dock_widgets:
-            dock = self.dock_widgets[key]
+        # Find the dock that actually contains this widget
+        dock = self.find_dock_for_widget(key)
+        if dock:
             dock.show()
             dock.raise_()
+            dock.focus_tab(key)
             return dock
         factory = self.widget_factories.get(key)
         if not factory:
             return None
         widget = factory()
-
-        dock_shell = QFrame()
-        dock_shell.setObjectName("DockBody")
-        dock_shell.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        inner_layout = QVBoxLayout(dock_shell)
-        inner_layout.setContentsMargins(BASE_SPACING, BASE_SPACING, BASE_SPACING, BASE_SPACING)
-        inner_layout.setSpacing(BASE_SPACING)
-        inner_layout.addWidget(widget)
-
-        splitter = QSplitter(Qt.Orientation.Vertical)
-        splitter.setObjectName("DockSplitter")
-        splitter.addWidget(dock_shell)
-        splitter.setSizes([1])
-
-        dock = WorkspaceDock(key, splitter, widget, self, link_callback=self.set_widget_link)
+        dock_id = f"Dock_{key}_{len(self.dock_by_id) + 1}"
+        dock = WorkspaceDock(
+            dock_id,
+            key,
+            widget,
+            self,
+            link_callback=self.set_widget_link,
+            widget_menu_callback=self.show_widget_menu_at
+        )
         dock.closed.connect(self.on_dock_closed)
         dock.collapsed_changed.connect(self.on_dock_collapsed)
+        dock.tab_removed.connect(lambda removed_key, d=dock: self.on_dock_tab_removed(d, removed_key))
+        dock.active_tab_changed.connect(self.on_dock_active_tab_changed)
         dock.setMinimumSize(QSize(150, 120))
         dock.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        if hasattr(widget, "setSizePolicy"):
-            widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.addDockWidget(area or Qt.DockWidgetArea.LeftDockWidgetArea, dock)
+        self.dock_by_id[dock.dock_id] = dock
         self.dock_widgets[key] = dock
         self.register_widget_instance(key, widget)
         dock.set_link_group_display(self.widget_link_groups.get(key))
@@ -1424,37 +1748,72 @@ class TradingTerminal(QMainWindow):
             widget.load_ticker(self.current_ticker)
         return dock
     
-    def on_dock_closed(self, key: str):
+    def on_dock_closed(self, dock: WorkspaceDock):
+        for key in dock.list_tab_keys():
+            self._untrack_widget(key)
+        self.remove_stowed_tab(dock.dock_id)
+        self.dock_by_id.pop(dock.dock_id, None)
+
+    def on_dock_tab_removed(self, dock: WorkspaceDock, key: str):
+        self._untrack_widget(key)
+    
+    def on_dock_active_tab_changed(self, key: str):
+        # Update the dock_widgets mapping to reflect the active tab's dock
+        dock = self.find_dock_for_widget(key)
+        if dock:
+            self.dock_widgets[key] = dock
+            dock.set_link_group_display(self.widget_link_groups.get(key))
+
+    def register_widget_instance(self, key: str, widget: QWidget):
+        if key == "Chart":
+            self.chart_widget = widget
+        elif key == "Quotes":
+            self.quote_widget = widget
+        elif key == "Fundamentals":
+            self.fundamentals_widget = widget
+        elif key == "News":
+            self.news_widget = widget
+        elif key == "Copilot":
+            self.chatbot = widget
+        elif key == "Screener":
+            self.screener = widget
+        self.widget_link_groups.setdefault(key, None)
+
+    def unregister_widget_instance(self, key: str):
+        if key == "Chart":
+            self.chart_widget = None
+        elif key == "Quotes":
+            self.quote_widget = None
+        elif key == "Fundamentals":
+            self.fundamentals_widget = None
+        elif key == "News":
+            self.news_widget = None
+        elif key == "Copilot":
+            self.chatbot = None
+        elif key == "Screener":
+            self.screener = None
+
+    def _untrack_widget(self, key: str):
+        # Remove from dock_widgets mapping
         self.dock_widgets.pop(key, None)
-        self.remove_stowed_tab(key)
         group = self.widget_link_groups.pop(key, None)
         if group and key in self.link_groups[group]:
             self.link_groups[group].remove(key)
+        self.unregister_widget_instance(key)
     
-    def register_widget_instance(self, key: str, widget: QWidget):
-        child = widget
-        if isinstance(widget, QSplitter):
-            frame = widget.widget(0)
-            if frame and isinstance(frame, QWidget):
-                layout = frame.layout()
-                if layout and layout.count():
-                    inner = layout.itemAt(0).widget()
-                    if inner:
-                        child = inner
-
-        if key == "Chart":
-            self.chart_widget = child
-        elif key == "Quotes":
-            self.quote_widget = child
-        elif key == "Fundamentals":
-            self.fundamentals_widget = child
-        elif key == "News":
-            self.news_widget = child
-        elif key == "Copilot":
-            self.chatbot = child
-        elif key == "Screener":
-            self.screener = child
-        self.widget_link_groups.setdefault(key, None)
+    def find_dock_for_widget(self, key: str) -> WorkspaceDock | None:
+        """Find which dock currently hosts a widget key."""
+        for dock in self.dock_by_id.values():
+            if key in dock.tab_widgets:
+                return dock
+        return None
+    
+    def get_widget_instance(self, key: str) -> QWidget | None:
+        """Get the actual widget instance for a key, regardless of which dock it's in."""
+        dock = self.find_dock_for_widget(key)
+        if dock:
+            return dock.tab_widgets.get(key)
+        return None
 
     def set_widget_link(self, key: str, group: int | None):
         prev = self.widget_link_groups.get(key)
@@ -1463,8 +1822,9 @@ class TradingTerminal(QMainWindow):
         if prev and key in self.link_groups[prev]:
             self.link_groups[prev].remove(key)
         self.widget_link_groups[key] = group
-        dock = self.dock_widgets.get(key)
-        if dock:
+        # Find the actual dock hosting this widget
+        dock = self.find_dock_for_widget(key)
+        if dock and dock.current_tab_key() == key:
             dock.set_link_group_display(group)
         if group:
             self.link_groups[group].add(key)
@@ -1480,38 +1840,38 @@ class TradingTerminal(QMainWindow):
             if key in ("Chart", "Fundamentals", "News"):
                 self.load_widget_ticker(key, self.current_ticker, propagate=False)
 
-    def on_dock_collapsed(self, key: str, collapsed: bool):
-        dock = self.dock_widgets.get(key)
+    def on_dock_collapsed(self, dock: WorkspaceDock, collapsed: bool):
         if not dock:
             return
         if collapsed:
             self.add_stowed_tab(dock)
         else:
-            self.remove_stowed_tab(key)
+            self.remove_stowed_tab(dock.dock_id)
 
     def add_stowed_tab(self, dock: WorkspaceDock):
-        key = dock.key
-        if key in self.stowed_actions:
+        dock_id = dock.dock_id
+        if dock_id in self.stowed_actions:
             return
         action = self.stow_bar.addAction(dock.windowTitle())
-        action.triggered.connect(lambda checked=False, k=key: self.restore_stowed(k))
-        self.stowed_actions[key] = action
+        action.triggered.connect(lambda checked=False, d_id=dock_id: self.restore_stowed(d_id))
+        self.stowed_actions[dock_id] = action
         self.stow_bar.show()
 
-    def remove_stowed_tab(self, key: str):
-        action = self.stowed_actions.pop(key, None)
+    def remove_stowed_tab(self, dock_id: str):
+        action = self.stowed_actions.pop(dock_id, None)
         if action:
             self.stow_bar.removeAction(action)
         if not self.stowed_actions and hasattr(self, "stow_bar"):
             self.stow_bar.hide()
 
-    def restore_stowed(self, key: str):
-        dock = self.dock_widgets.get(key)
+    def restore_stowed(self, dock_id: str):
+        dock = self.dock_by_id.get(dock_id)
         if not dock:
             return
         if dock.collapsed:
             dock.toggle_collapsed()
-        self.remove_stowed_tab(key)
+
+        self.remove_stowed_tab(dock_id)
 
     def load_widget_ticker(self, key: str, ticker: str, propagate: bool = False):
         loaded = False
@@ -1525,9 +1885,9 @@ class TradingTerminal(QMainWindow):
             self.news_widget.load_ticker(ticker)
             loaded = True
         elif key == "Quotes" and self.quote_widget:
-            snapshot = self.fetch_ticker_snapshot(ticker)
-            self.quote_widget.update_snapshot(snapshot)
+            self.quote_widget.show_loading(ticker)
             self.update_brand_accent(ticker)
+            self.request_snapshot(ticker)
             loaded = True
         if propagate:
             self.broadcast_link_update(key, ticker)
@@ -1554,20 +1914,27 @@ class TradingTerminal(QMainWindow):
         """Manually refresh ticker snapshot data."""
         self.request_snapshot()
 
-    def request_snapshot(self):
+    def request_snapshot(self, ticker: str | None = None):
         """Spawn/refresh background worker for ticker quotes."""
-        ticker = self.current_ticker
-        if not ticker:
+        target = (ticker or self.current_ticker or "").strip()
+        if not target:
             return
-        worker = SnapshotWorker(lambda: self.fetch_ticker_snapshot(ticker))
-        worker.result_ready.connect(lambda snapshot, w=worker: self.on_snapshot_ready(snapshot, w))
+        symbol = target.upper()
+        worker = SnapshotWorker(lambda: self.fetch_ticker_snapshot(symbol))
+        worker.result_ready.connect(lambda snapshot, w=worker, expected=symbol: self.on_snapshot_ready(snapshot, w, expected))
         worker.finished.connect(lambda w=worker: self.cleanup_worker(w))
         self.snapshot_worker = worker
         self.snapshot_workers.append(worker)
         worker.start()
 
-    def on_snapshot_ready(self, snapshot: dict, worker: SnapshotWorker | None = None):
-        if snapshot.get("symbol", "").upper() != (self.current_ticker or "").upper():
+    def on_snapshot_ready(self, snapshot: dict, worker: SnapshotWorker | None = None,
+                          expected_symbol: str | None = None):
+        current_symbol = (self.current_ticker or "").upper()
+        if expected_symbol and expected_symbol != current_symbol:
+            return
+        target_symbol = expected_symbol or current_symbol
+        snapshot_symbol = snapshot.get("symbol", "").upper()
+        if target_symbol and snapshot_symbol and snapshot_symbol != target_symbol:
             return
         self.update_snapshot_ui(snapshot)
         if worker is self.snapshot_worker:
@@ -1580,62 +1947,7 @@ class TradingTerminal(QMainWindow):
 
     def fetch_ticker_snapshot(self, ticker: str) -> dict:
         """Lightweight ticker overview used by the hero section."""
-        snapshot = {"symbol": ticker.upper()}
-        try:
-            stock = yf.Ticker(ticker)
-            fast_info = getattr(stock, "fast_info", {}) or {}
-            try:
-                info = stock.info
-            except Exception:
-                info = {}
-
-            price = (fast_info.get("last_price") or fast_info.get("lastPrice") or
-                     fast_info.get("lastSalePrice") or info.get("regularMarketPrice") or
-                     info.get("currentPrice"))
-            prev_close = (fast_info.get("previous_close") or fast_info.get("previousClose") or
-                          info.get("previousClose"))
-
-            if price is not None and prev_close is not None:
-                change = price - prev_close
-                change_pct = (change / prev_close) * 100 if prev_close else None
-            else:
-                change = None
-                change_pct = None
-
-            volume = fast_info.get("volume") or info.get("volume") or info.get("averageVolume")
-            high_52 = fast_info.get("yearHigh") or info.get("fiftyTwoWeekHigh")
-            low_52 = fast_info.get("yearLow") or info.get("fiftyTwoWeekLow")
-
-            snapshot.update({
-                "name": info.get("shortName") or info.get("longName") or ticker.upper(),
-                "price": price,
-                "change": change,
-                "change_pct": change_pct,
-                "volume": volume,
-                "volume_label": "Session volume" if fast_info.get("volume") else "Avg volume",
-                "time": datetime.now().strftime("%b %d - %H:%M"),
-            })
-
-            if high_52 and low_52:
-                snapshot["range"] = f"${low_52:,.0f} - ${high_52:,.0f}"
-                snapshot["range_label"] = "52W range"
-            else:
-                snapshot["range"] = None
-
-            snapshot["status"] = self.get_market_status_text(fast_info, info)
-
-        except Exception as exc:
-            snapshot["status"] = "Data issue"
-            snapshot["range"] = None
-            snapshot["error"] = str(exc)
-
-        return snapshot
-
-    def get_market_status_text(self, fast_info: dict, info: dict) -> str:
-        state = (fast_info.get("market_state") or fast_info.get("marketState") or
-                 info.get("marketState") or "Live data")
-        state = str(state).replace("_", " ")
-        return state.title()
+        return self.data_provider.fetch_snapshot_payload(ticker)
 
     def update_snapshot_ui(self, snapshot: dict):
         if self.quote_widget:
@@ -1656,6 +1968,77 @@ class TradingTerminal(QMainWindow):
                 accent = mix_colors("#ffffff", pastel, 0.25)
         self.quote_widget.apply_brand_color(accent)
     
+    def run_and_display_analysis(self, ticker: str):
+        """Run strategy analysis and display in chatbot."""
+        if not self.chatbot:
+            return
+        self.chatbot.add_bot_message(f"Analyzing {ticker} for consolidation breakout...")
+        # This should be async in a real app, but for prototype, we do it sync
+        analysis_text = self.get_signal_analysis_text(ticker)
+        self.chatbot.add_bot_message(analysis_text)
+
+    def get_signal_analysis_text(self, ticker: str) -> str:
+        """Fetches data and returns a formatted string of the current signal analysis."""
+        try:
+            df = strategy.fetch_hourly_data(ticker, period_days=30)
+            if df.empty:
+                return f"Could not retrieve data for {ticker}."
+            
+            sigs = strategy.breakout_volume_signals(df)
+            last_sig = sigs.iloc[-1]
+            current_price = df["Close"].iloc[-1]
+            cons_high = float(last_sig["cons_high_prev"]) if not np.isnan(last_sig["cons_high_prev"]) else None
+            cons_low = float(last_sig["cons_low_prev"]) if not np.isnan(last_sig["cons_low_prev"]) else None
+            
+            if bool(last_sig["false_breakout"]):
+                return f"""**{ticker} - FALSE BREAKOUT Signal**
+
+Current Price: ${current_price:.2f}
+Consolidation Range: ${cons_low:.2f} - ${cons_high:.2f}
+
+**Analysis:**
+- Price broke above consolidation high but on LOW volume (< 25th percentile)
+- This suggests liquidity was taken but lacks follow-through
+- **Potential short opportunity** if price rejects and returns below ${cons_high:.2f}
+
+**Risk Management:**
+- Stop: Above recent high
+- Target: Back to consolidation low ${cons_low:.2f}"""
+            
+            elif bool(last_sig["signal"]):
+                return f"""**{ticker} - TRUE BREAKOUT Signal**
+
+Current Price: ${current_price:.2f}
+Consolidation Range: ${cons_low:.2f} - ${cons_high:.2f}
+
+**Analysis:**
+- Price broke above consolidation high with HIGH volume (>= 75th percentile)
+- Strong buying pressure indicates continuation
+- **Long entry opportunity**
+
+**Trade Setup:**
+- Entry: Current price or pullback to ${cons_high:.2f}
+- Stop: ${cons_low:.2f} (consolidation low)
+- Target: ${current_price + (current_price - cons_low) * strategy.RR_TARGET:.2f} (2R target)
+- Risk/Reward: 1:{strategy.RR_TARGET}"""
+            
+            elif bool(last_sig["cons_ok"]):
+                breakout_level = float(last_sig["breakout_level"])
+                dist_pct = ((breakout_level - current_price) / current_price) * 100
+                return f"""**{ticker} - CONSOLIDATION SETUP**
+
+Current Price: ${current_price:.2f}
+Consolidation Range: ${cons_low:.2f} - ${cons_high:.2f}
+Breakout Level: ${breakout_level:.2f}
+Distance to Breakout: {dist_pct:.2f}%
+
+**Status:** Waiting for breakout
+**Action:** Monitor for volume confirmation when price approaches ${breakout_level:.2f}"""
+            else:
+                return f"{ticker} is not showing a setup currently. No consolidation detected in the last {strategy.LOOKBACK_HOURS} hours."
+        except Exception as e:
+            return f"Error analyzing {ticker}: {str(e)}"
+
     def _build_header_button(self, glyph: str, tooltip: str) -> QToolButton:
         btn = QToolButton()
         btn.setObjectName("UtilityIconButton")
@@ -1706,6 +2089,7 @@ class TradingTerminal(QMainWindow):
 
         self.widget_button = self._build_header_button("+", "Add widget")
         self.widget_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.widget_button.pressed.connect(lambda: setattr(self, 'pending_widget_target_dock', None))
         controls_layout.addWidget(self.widget_button)
         
         self.theme_button = self._build_header_button("", "Toggle theme")
@@ -1725,7 +2109,7 @@ class TradingTerminal(QMainWindow):
         self.stow_bar.setContextMenuPolicy(Qt.ContextMenuPolicy.PreventContextMenu)
         self.addToolBar(Qt.ToolBarArea.BottomToolBarArea, self.stow_bar)
         self.stow_bar.hide()
-    
+
     def get_current_theme(self):
         return THEMES[self.current_theme_name]
     
@@ -1883,29 +2267,34 @@ class TradingTerminal(QMainWindow):
         QWidget#DockTitleBar[tabbed="true"] {{
             border-bottom: none;
         }}
-        QLabel#DockTitle {{
+        QLabel#DockTitleLabel {{
             color: {theme['tab_text']};
+            font-weight: 600;
+            letter-spacing: 0.05em;
         }}
-        QWidget#DockTabStrip {{
-            background: transparent;
-        }}
-        QToolButton#DockTabButton {{
-            background-color: transparent;
+        QTabBar::tab {{
+            background: {theme['tab_bg']};
+            color: {theme['tab_text']};
+            padding: 6px 14px;
+            margin-right: 4px;
             border: 1px solid {theme['divider']};
-            border-radius: 0px;
-            padding: 6px 12px;
-            color: {theme['tab_text']};
+            border-bottom: none;
+            border-top-left-radius: {radius}px;
+            border-top-right-radius: {radius}px;
         }}
-        QToolButton#DockTabButton:checked {{
-            background-color: {theme['tab_text']};
-            color: {theme['panel_bg']};
+        QTabBar::tab:selected {{
+            background-color: {theme['panel_bg']};
+            color: {theme['text']};
         }}
-        QToolButton#DockTabButton[solo="true"] {{
-            border-color: {theme['divider']};
-            color: {theme['tab_text']};
+        QTabBar::tab:!selected {{
+            opacity: 0.7;
         }}
-        QToolButton#DockTabButton:disabled {{
-            color: {theme['tab_text']};
+        QTabBar::tab:hover {{
+            color: {theme['accent']};
+        }}
+        QTabWidget::pane {{
+            border: 1px solid {theme['divider']};
+            top: -1px;
         }}
         QDockWidget::title {{
             padding: 0;
@@ -1929,14 +2318,23 @@ class TradingTerminal(QMainWindow):
             background-color: {theme['accent']};
             color: {theme['button_text']};
         }}
-        QTabBar::tab {{
-            background: {theme['tab_bg']};
-            color: {theme['tab_text']};
-            padding: 6px 12px;
-            margin-right: 2px;
+        QTabBar#DockTabBar {{
+            background: transparent;
         }}
-        QTabBar::tab:selected {{
-            border-bottom: 2px solid {theme['tab_text']};
+        QTabBar#DockTabBar::tab {{
+            background-color: transparent;
+            color: {theme['muted']};
+            padding: 2px 10px;
+            margin-left: 8px;
+            border: 1px solid {theme['divider']};
+            border-radius: 10px;
+        }}
+        QTabBar#DockTabBar::tab:selected {{
+            color: {theme['text']};
+            border-color: {theme['accent']};
+        }}
+        QTabBar#DockTabBar::tab:hover {{
+            color: {theme['accent']};
         }}
         QToolBar#StowBar {{
             background-color: {theme['panel_bg']};
@@ -2094,32 +2492,36 @@ class TradingTerminal(QMainWindow):
         self.apply_theme()
     
     def on_ticker_selected(self, ticker: str):
-        """Handle ticker selection."""
+        """Handle ticker selection from the main screener, ensuring all widgets update correctly."""
+        if not ticker or self.current_ticker == ticker.upper():
+            return
+        
+        ticker = ticker.upper()
         self.current_ticker = ticker
+
+        # Directly update the brand accent color.
         self.update_brand_accent(ticker)
-        self.load_widget_ticker("Quotes", ticker, propagate=True)
-        if "Chart" not in self.dock_widgets:
-            self.ensure_widget("Chart", Qt.DockWidgetArea.RightDockWidgetArea)
-        if "Quotes" not in self.dock_widgets:
-            self.ensure_widget("Quotes", Qt.DockWidgetArea.TopDockWidgetArea)
-        if "Fundamentals" not in self.dock_widgets:
-            self.ensure_widget("Fundamentals", Qt.DockWidgetArea.BottomDockWidgetArea)
-        if "News" not in self.dock_widgets:
-            self.ensure_widget("News", Qt.DockWidgetArea.BottomDockWidgetArea)
+
+        # Explicitly update the main hero widget and other primary displays.
+        # This ensures they always follow the main selection regardless of linking.
+        self.load_widget_ticker("Quotes", ticker)
         if self.chart_widget:
             self.chart_widget.load_ticker(ticker)
         if self.fundamentals_widget:
             self.fundamentals_widget.load_ticker(ticker)
         if self.news_widget:
             self.news_widget.load_ticker(ticker)
-        self.request_snapshot()
+
+        # Also broadcast the ticker to any widgets the user has explicitly linked to the Screener.
+        self.broadcast_link_update("Screener", ticker)
+
+        # Update associated UI elements.
         if self.quote_widget and self.chart_widget:
             self.quote_widget.set_active_interval(self.chart_widget.current_interval)
-        self.broadcast_link_update("Screener", ticker)
         if self.refresh_button:
             self.refresh_button.setEnabled(True)
         if self.chatbot:
-            self.chatbot.add_bot_message(f"Loaded {ticker}. Ask me about its signals or strategy!")
+            self.chatbot.add_bot_message(f"Context updated to {ticker}.")
     
     def get_context(self) -> dict:
         """Get current context for chatbot - enhanced with more details."""
@@ -2137,11 +2539,8 @@ def main():
     QApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLContexts)
     app = QApplication(sys.argv)
     app.setStyle("Fusion")  # Modern look
-    tab_filter = DockTabBarFilter(app)
-    app.installEventFilter(tab_filter)
     
     window = TradingTerminal()
-    window._dock_tab_filter = tab_filter
     window.show()
     
     sys.exit(app.exec())

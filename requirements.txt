@@ -2,5 +2,8 @@ PyQt6>=6.5.0
 PyQt6-WebEngine>=6.5.0
 pandas>=2.0.0
 numpy>=1.24.0
-yfinance>=0.2.0
-
+alpaca-trade-api>=2.1.0
+fastapi
+uvicorn
+matplotlib
+python-dotenv
