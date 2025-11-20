@@ -9,9 +9,6 @@ import colorsys
 from collections import defaultdict
 from datetime import datetime, time, timedelta
 from zoneinfo import ZoneInfo
-from dotenv import load_dotenv
-
-load_dotenv()
 warnings.filterwarnings("ignore")
 
 import os
@@ -34,21 +31,10 @@ from PyQt6.QtWebEngineCore import QWebEngineSettings
 
 
 
-import alpaca_trade_api as tradeapi
-from alpaca_trade_api.rest import TimeFrame, APIError
-
 # Import our existing strategy code
 import strategy
+import yfinance as yf
 import numpy as np
-
-
-# Alpaca API global client
-api = tradeapi.REST(
-    os.environ.get('APCA_API_KEY_ID'),
-    os.environ.get('APCA_API_SECRET_KEY'),
-    base_url=os.environ.get('APCA_API_BASE_URL'),
-    api_version='v2'
-)
 
 
 BASE_RADIUS = 12
@@ -80,21 +66,21 @@ THEMES = {
         "window_bg": "#ffffff",
         "panel_bg": "#ffffff",
         "surface": "#ffffff",
-        "surface_alt": "#ffffff",
+        "surface_alt": "#f9fafb",
         "border": "#000000",
         "text": "#000000",
-        "muted": "#000000",
+        "muted": "#6b7280",
         "accent": "#000000",
-        "accent_hover": "#ffffff",
+        "accent_hover": "#f3f4f6",
         "button_text": "#ffffff",
         "button_hover_text": "#000000",
         "input_bg": "#ffffff",
-        "tab_bg": "#000000",
+        "tab_bg": "#f5f5f5",
         "tab_text": "#000000",
         "chart_theme": "light",
         "chart_bg": "#ffffff",
         "chart_toolbar": "#ffffff",
-        "divider": "#000000"
+        "divider": "#e5e7eb"
     }
 }
 
@@ -171,7 +157,7 @@ def ideal_text_color(hex_color: str) -> str:
 
 
 class TickerDataProvider:
-    """Centralized, cache-aware access layer for Alpaca API payloads."""
+    """Centralized, cache-aware access layer for yfinance payloads."""
 
     SNAPSHOT_TTL = timedelta(seconds=15)
     FUNDAMENTALS_TTL = timedelta(minutes=8)
@@ -182,6 +168,7 @@ class TickerDataProvider:
         self._snapshot_cache: dict[str, tuple[datetime, dict]] = {}
         self._fundamentals_cache: dict[str, tuple[datetime, dict]] = {}
         self._news_cache: dict[str, tuple[datetime, dict]] = {}
+        self._ticker_handles: dict[str, yf.Ticker] = {}
 
     def fetch_snapshot_payload(self, ticker: str) -> dict:
         symbol = (ticker or "").strip().upper()
@@ -231,63 +218,79 @@ class TickerDataProvider:
         with self._lock:
             cache[symbol] = (datetime.utcnow(), payload)
 
+    def _ticker_handle(self, symbol: str) -> yf.Ticker:
+        with self._lock:
+            handle = self._ticker_handles.get(symbol)
+            if handle is None:
+                handle = yf.Ticker(symbol)
+                self._ticker_handles[symbol] = handle
+            return handle
+
     def _build_snapshot(self, symbol: str) -> dict:
         snapshot = {"symbol": symbol}
-        print(f"Building snapshot for {symbol}")
         try:
-            latest_quote = api.get_latest_quote(symbol)
-            asset = api.get_asset(symbol)
+            handle = self._ticker_handle(symbol)
+            fast_info = dict(getattr(handle, "fast_info", {}) or {})
+            try:
+                info = handle.info
+            except Exception:
+                info = {}
 
-            price = latest_quote.ap  # Ask price
-            # Fetch previous day's close for change calculation
-            end_dt = datetime.now(ZoneInfo("UTC")) - timedelta(days=1)
-            start_dt = end_dt - timedelta(days=4) # Go back a few days to ensure we get a trading day
-            prev_day_bars = api.get_bars(symbol, TimeFrame.Day, start=start_dt.strftime('%Y-%m-%d'), end=end_dt.strftime('%Y-%m-%d')).df
-            prev_close = prev_day_bars['close'].iloc[-1] if not prev_day_bars.empty else None
+            price = (fast_info.get("last_price") or fast_info.get("lastPrice") or
+                     fast_info.get("lastSalePrice") or info.get("regularMarketPrice") or
+                     info.get("currentPrice"))
+            prev_close = (fast_info.get("previous_close") or fast_info.get("previousClose") or
+                          info.get("previousClose"))
 
-            if price is not None and prev_close is not None:
+            if price is not None and prev_close:
                 change = price - prev_close
                 change_pct = (change / prev_close) * 100 if prev_close else None
             else:
                 change = None
                 change_pct = None
 
-            # Get daily volume from latest daily bar
-            latest_daily_bar = api.get_bars(symbol, TimeFrame.Day, limit=1).df
-            volume = latest_daily_bar['volume'].iloc[0] if not latest_daily_bar.empty else None
-            
+            volume = (fast_info.get("volume") or info.get("volume") or
+                      info.get("averageVolume"))
+            high_52 = fast_info.get("yearHigh") or info.get("fiftyTwoWeekHigh")
+            low_52 = fast_info.get("yearLow") or info.get("fiftyTwoWeekLow")
+
             snapshot.update({
-                "name": asset.name,
+                "name": info.get("shortName") or info.get("longName") or symbol,
                 "price": price,
                 "change": change,
                 "change_pct": change_pct,
                 "volume": volume,
-                "volume_label": "Session volume",
+                "volume_label": "Session volume" if fast_info.get("volume") else "Avg volume",
                 "time": datetime.now().strftime("%b %d - %H:%M"),
-                "status": "Live Data" if asset.tradable else "Not Tradable",
+                "status": self._market_status_text(fast_info, info),
             })
-            print(f"Snapshot data for {symbol}: {snapshot}")
-        except APIError as e:
-            snapshot["status"] = "Data issue"
-            snapshot["error"] = str(e)
-            print(f"API Error for {symbol}: {e}")
+
+            if high_52 and low_52:
+                snapshot["range"] = f"${low_52:,.0f} - ${high_52:,.0f}"
+                snapshot["range_label"] = "52W range"
+            else:
+                snapshot["range"] = None
         except Exception as exc:
             snapshot["status"] = "Data issue"
+            snapshot["range"] = None
             snapshot["error"] = str(exc)
-            print(f"Generic Error for {symbol}: {exc}")
         return snapshot
 
     def _build_fundamentals(self, symbol: str) -> dict:
         try:
-            asset = api.get_asset(symbol)
+            handle = self._ticker_handle(symbol)
+            info = handle.info
             metrics = [
-                ("Symbol", asset.symbol),
-                ("Exchange", asset.exchange),
-                ("Asset Class", asset.asset_class),
-                ("Status", asset.status),
-                ("Tradable", asset.tradable),
-                ("Marginable", asset.marginable),
-                ("Shortable", asset.shortable),
+                ("Market Cap", info.get("marketCap", "N/A")),
+                ("P/E Ratio", info.get("trailingPE", "N/A")),
+                ("Forward P/E", info.get("forwardPE", "N/A")),
+                ("EPS", info.get("trailingEps", "N/A")),
+                ("Dividend Yield", f"{info.get('dividendYield', 0) * 100:.2f}%"
+                 if info.get('dividendYield') else "N/A"),
+                ("52 Week High", f"${info.get('fiftyTwoWeekHigh', 'N/A')}"),
+                ("52 Week Low", f"${info.get('fiftyTwoWeekLow', 'N/A')}"),
+                ("Volume (Avg)", info.get("averageVolume", "N/A")),
+                ("Beta", info.get("beta", "N/A")),
             ]
             return {"ticker": symbol, "metrics": metrics}
         except Exception as exc:
@@ -295,12 +298,13 @@ class TickerDataProvider:
 
     def _build_news(self, symbol: str) -> dict:
         try:
-            news_items = api.get_news(symbol, limit=12)
+            handle = self._ticker_handle(symbol)
+            news_items = getattr(handle, "news", None) or []
             items = []
-            for item in news_items:
-                title = item.headline
-                timestamp = item.created_at
-                date_str = timestamp.strftime("%b %d") if timestamp else "--"
+            for item in news_items[:12]:
+                title = item.get("title", "No title")
+                timestamp = item.get("providerPublishTime", 0) or 0
+                date_str = datetime.fromtimestamp(timestamp).strftime("%b %d") if timestamp else "--"
                 items.append(f"[{date_str}] {title}")
             return {"ticker": symbol, "items": items}
         except Exception as exc:
@@ -308,10 +312,10 @@ class TickerDataProvider:
 
     @staticmethod
     def _market_status_text(fast_info: dict, info: dict) -> str:
-        # This method is no longer used with Alpaca, but we keep it for reference
-        # or if we want to re-implement a similar logic based on Alpaca's market status endpoints
-        return "Live Data"
-
+        state = (fast_info.get("market_state") or fast_info.get("marketState") or
+                 info.get("marketState") or "Live data")
+        state = str(state).replace("_", " ")
+        return state.title()
 
 
 class SnapshotWorker(QThread):
@@ -680,6 +684,7 @@ class QuoteWidget(QFrame):
         self.interval_callback = interval_callback
         self.setObjectName("QuoteCard")
         self.active_interval = None
+        self.current_ticker = None
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 20, 24, 20)
@@ -753,6 +758,7 @@ class QuoteWidget(QFrame):
 
     def show_loading(self, ticker: str):
         symbol = (ticker or "--").upper()
+        self.current_ticker = symbol
         self.ticker_label.setText(symbol)
         self.subtitle_label.setText("Fetching latest snapshot...")
         self.status_badge.setText("Loading...")
@@ -1267,176 +1273,150 @@ class ChatbotWidget(QWidget):
         """Add bot message to chat."""
         self.chat_display.append(f"<b>Assistant:</b> {msg}")
     
-        def generate_response(self, user_msg: str, context: dict) -> str:
-    
-            """Generate chatbot response based on user message and context."""
-    
-            msg_lower = user_msg.lower()
-    
-            ticker = context.get("ticker", "N/A")
-    
-            
-    
-            # Signal explanations
-    
-            if "false breakout" in msg_lower or "false" in msg_lower:
-    
-                return f"""A **false breakout** occurs when price breaks above the consolidation high but on **low volume** (< 25th percentile).
-    
-    
-    
-    This suggests:
-    
-    - Liquidity was taken (stops above consolidation)
-    
-    - Lack of follow-through (low volume)
-    
-    - Likely to reverse back into consolidation
-    
-    
-    
-    For {ticker}, this could be a **short opportunity** if confirmed."""
-    
-            
-    
-            if "true breakout" in msg_lower or "breakout" in msg_lower:
-    
-                return f"""A **true breakout** happens when price breaks above consolidation high with **high volume** (>= 75th percentile).
-    
-    
-    
-    This indicates:
-    
-    - Strong buying pressure
-    
-    - Likely continuation move
-    
-    - Good entry for long positions
-    
-    
-    
-    The strategy enters long on true breakouts with a stop at consolidation low and 2R target."""
-    
-            
-    
-            if "consolidation" in msg_lower:
-    
-                return f"""**Consolidation** is when price trades in a tight range (<= 2% of mean price) over the lookback period ({strategy.LOOKBACK_HOURS} hours).
-    
-    
-    
-    For {ticker}, consolidation bands show:
-    
-    - **Green line**: Consolidation high (resistance)
-    
-    - **Red line**: Consolidation low (support)
-    
-    
-    
-    When price breaks above the green line with volume, it's a breakout signal."""
-    
-            
-    
-            if "strategy" in msg_lower or "how does" in msg_lower:
-    
-                return f"""**Consolidation + Breakout + Volume Strategy**
-    
-    
-    
-    1. **Identify Consolidation**: Price in tight range (<= 2% over {strategy.LOOKBACK_HOURS} hours)
-    
-    2. **Wait for Breakout**: Price breaks above consolidation high
-    
-    3. **Check Volume**: 
-    
-       - High volume (>= 75th percentile) = True breakout (long)
-    
-       - Low volume (< 25th percentile) = False breakout (short opportunity)
-    
-    4. **Enter**: Stop at consolidation low, target at 2R
-    
-    
-    
-    Currently analyzing: {ticker}"""
-    
-            
-    
-            if "backtest" in msg_lower:
-    
-                return f"""I can run a backtest! The strategy uses:
-    
-    - Risk: {strategy.RISK_FRACTION*100}% per trade
-    
-    - R:R: {strategy.RR_TARGET}:1
-    
-    - Stop: Consolidation low
-    
-    - Target: Entry + {strategy.RR_TARGET}R
-    
-    
-    
-    Would you like me to backtest {ticker} or the full universe?"""
-    
-            
-    
-            if "volume" in msg_lower:
-    
-                return f"""Volume analysis uses **dynamic thresholds** based on each stock's own distribution:
-    
-    - **High volume**: >= 75th percentile (green bars)
-    
-    - **Low volume**: < 25th percentile (red bars)
-    
-    - **Normal**: Between thresholds (gray bars)
-    
-    
-    
-    This adapts to each stock's volume profile - a high-volume stock like TSLA has different thresholds than a low-volume stock."""
-    
-            
-    
-            # Enhanced context-aware responses
-    
-            if ticker != "N/A":
-    
-                if "what" in msg_lower and ("signal" in msg_lower or "showing" in msg_lower):
-    
-                    # Get current signal status with more detail
-    
-                    # This is now handled by the main window to be reusable
-    
-                    return self.context_callback(fetch_analysis=True)
-    
-            
-    
-            # Default response
-    
-            return f"""I understand you're asking about: "{user_msg}"
-    
-    
-    
-    For {ticker}, I can help with:
-    
-    - Explaining signals (true/false breakouts)
-    
-    - Strategy mechanics
-    
-    - Risk/reward analysis
-    
-    - Backtesting
-    
-    
-    
-    Try asking: "What signal is {ticker} showing?" or "Explain false breakouts" """
+    def generate_response(self, user_msg: str, context: dict) -> str:
+        """Generate chatbot response based on user message and context."""
+        msg_lower = user_msg.lower()
+        ticker = context.get("ticker", "N/A")
+        
+        # Signal explanations
+        if "false breakout" in msg_lower or "false" in msg_lower:
+            return f"""A **false breakout** occurs when price breaks above the consolidation high but on **low volume** (< 25th percentile).
+
+This suggests:
+- Liquidity was taken (stops above consolidation)
+- Lack of follow-through (low volume)
+- Likely to reverse back into consolidation
+
+For {ticker}, this could be a **short opportunity** if confirmed."""
+        
+        if "true breakout" in msg_lower or "breakout" in msg_lower:
+            return f"""A **true breakout** happens when price breaks above consolidation high with **high volume** (>= 75th percentile).
+
+This indicates:
+- Strong buying pressure
+- Likely continuation move
+- Good entry for long positions
+
+The strategy enters long on true breakouts with a stop at consolidation low and 2R target."""
+        
+        if "consolidation" in msg_lower:
+            return f"""**Consolidation** is when price trades in a tight range (<= 2% of mean price) over the lookback period ({strategy.LOOKBACK_HOURS} hours).
+
+For {ticker}, consolidation bands show:
+- **Green line**: Consolidation high (resistance)
+- **Red line**: Consolidation low (support)
+
+When price breaks above the green line with volume, it's a breakout signal."""
+        
+        if "strategy" in msg_lower or "how does" in msg_lower:
+            return f"""**Consolidation + Breakout + Volume Strategy**
+
+1. **Identify Consolidation**: Price in tight range (<= 2% over {strategy.LOOKBACK_HOURS} hours)
+2. **Wait for Breakout**: Price breaks above consolidation high
+3. **Check Volume**: 
+   - High volume (>= 75th percentile) = True breakout (long)
+   - Low volume (< 25th percentile) = False breakout (short opportunity)
+4. **Enter**: Stop at consolidation low, target at 2R
+
+Currently analyzing: {ticker}"""
+        
+        if "backtest" in msg_lower:
+            return f"""I can run a backtest! The strategy uses:
+- Risk: {strategy.RISK_FRACTION*100}% per trade
+- R:R: {strategy.RR_TARGET}:1
+- Stop: Consolidation low
+- Target: Entry + {strategy.RR_TARGET}R
+
+Would you like me to backtest {ticker} or the full universe?"""
+        
+        if "volume" in msg_lower:
+            return f"""Volume analysis uses **dynamic thresholds** based on each stock's own distribution:
+- **High volume**: >= 75th percentile (green bars)
+- **Low volume**: < 25th percentile (red bars)
+- **Normal**: Between thresholds (gray bars)
+
+This adapts to each stock's volume profile - a high-volume stock like TSLA has different thresholds than a low-volume stock."""
+        
+        # Enhanced context-aware responses
+        if ticker != "N/A":
+            if "what" in msg_lower and ("signal" in msg_lower or "showing" in msg_lower):
+                # Get current signal status with more detail
+                try:
+                    df = strategy.fetch_hourly_data(ticker, period="30d")
+                    if not df.empty:
+                        sigs = strategy.breakout_volume_signals(df)
+                        last_sig = sigs.iloc[-1]
+                        current_price = df["Close"].iloc[-1]
+                        cons_high = float(last_sig["cons_high_prev"]) if not np.isnan(last_sig["cons_high_prev"]) else None
+                        cons_low = float(last_sig["cons_low_prev"]) if not np.isnan(last_sig["cons_low_prev"]) else None
+                        
+                        if bool(last_sig["false_breakout"]):
+                            return f"""**{ticker} - FALSE BREAKOUT Signal**
+
+Current Price: ${current_price:.2f}
+Consolidation Range: ${cons_low:.2f} - ${cons_high:.2f}
+
+**Analysis:**
+- Price broke above consolidation high but on LOW volume (< 25th percentile)
+- This suggests liquidity was taken but lacks follow-through
+- **Potential short opportunity** if price rejects and returns below ${cons_high:.2f}
+
+**Risk Management:**
+- Stop: Above recent high
+- Target: Back to consolidation low ${cons_low:.2f}"""
+                        
+                        elif bool(last_sig["signal"]):
+                            return f"""**{ticker} - TRUE BREAKOUT Signal**
+
+Current Price: ${current_price:.2f}
+Consolidation Range: ${cons_low:.2f} - ${cons_high:.2f}
+
+**Analysis:**
+- Price broke above consolidation high with HIGH volume (>= 75th percentile)
+- Strong buying pressure indicates continuation
+- **Long entry opportunity**
+
+**Trade Setup:**
+- Entry: Current price or pullback to ${cons_high:.2f}
+- Stop: ${cons_low:.2f} (consolidation low)
+- Target: ${current_price + (current_price - cons_low) * strategy.RR_TARGET:.2f} (2R target)
+- Risk/Reward: 1:{strategy.RR_TARGET}"""
+                        
+                        elif bool(last_sig["cons_ok"]):
+                            breakout_level = float(last_sig["breakout_level"])
+                            dist_pct = ((breakout_level - current_price) / current_price) * 100
+                            return f"""**{ticker} - CONSOLIDATION SETUP**
+
+Current Price: ${current_price:.2f}
+Consolidation Range: ${cons_low:.2f} - ${cons_high:.2f}
+Breakout Level: ${breakout_level:.2f}
+Distance to Breakout: {dist_pct:.2f}%
+
+**Status:** Waiting for breakout
+**Action:** Monitor for volume confirmation when price approaches ${breakout_level:.2f}"""
+                        else:
+                            return f"{ticker} is not showing a setup currently. No consolidation detected in the last {strategy.LOOKBACK_HOURS} hours."
+                except Exception as e:
+                    return f"Error analyzing {ticker}: {str(e)}"
+        
+        # Default response
+        return f"""I understand you're asking about: "{user_msg}"
+
+For {ticker}, I can help with:
+- Explaining signals (true/false breakouts)
+- Strategy mechanics
+- Risk/reward analysis
+- Backtesting
+
+Try asking: "What signal is {ticker} showing?" or "Explain false breakouts" """
 
 
 class ScreenerWidget(QWidget):
     """Left sidebar: Stock screener and search."""
     
-    def __init__(self, ticker_callback, analysis_callback):
+    def __init__(self, ticker_callback):
         super().__init__()
         self.ticker_callback = ticker_callback  # Callback when ticker selected
-        self.analysis_callback = analysis_callback # Callback to trigger AI analysis
         self.init_ui()
     
     def init_ui(self):
@@ -1503,8 +1483,6 @@ class ScreenerWidget(QWidget):
         
         # Ticker list
         self.ticker_list = QListWidget()
-        self.ticker_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self.ticker_list.customContextMenuRequested.connect(self._show_ticker_context_menu)
         self.ticker_list.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.ticker_list.itemClicked.connect(self.on_ticker_selected)
         watchlist_label = QLabel("Watchlist")
@@ -1545,23 +1523,6 @@ class ScreenerWidget(QWidget):
         if text.lower().startswith("scanning"):
             return
         self.ticker_callback(text)
-
-    def _show_ticker_context_menu(self, position):
-        """Show context menu for ticker list."""
-        item = self.ticker_list.itemAt(position)
-        if not item:
-            return
-        
-        ticker = item.text().strip()
-        
-        menu = QMenu()
-        ai_menu = menu.addMenu("AI Copilot")
-        
-        analyze_action = QAction("Analyze Consolidation Breakout", self)
-        analyze_action.triggered.connect(lambda checked, t=ticker: self.analysis_callback(t))
-        ai_menu.addAction(analyze_action)
-        
-        menu.exec(self.ticker_list.mapToGlobal(position))
     
     def set_tab_mode(self, tabbed: bool):
         if hasattr(self, "header_frame"):
@@ -1596,6 +1557,12 @@ class TradingTerminal(QMainWindow):
         self.dock_by_id: Dict[str, WorkspaceDock] = {}
         self.pending_widget_target_dock: WorkspaceDock | None = None
         self.data_provider = TickerDataProvider()
+
+        # Auto-refresh timer for live quotes (every 15 seconds)
+        self.auto_refresh_timer = QTimer(self)
+        self.auto_refresh_timer.timeout.connect(self.auto_refresh_quotes)
+        self.auto_refresh_timer.start(15000)  # 15 seconds
+
         self.init_ui()
         self.apply_theme()
     
@@ -1622,7 +1589,7 @@ class TradingTerminal(QMainWindow):
         self.widget_factories = {
             "Quotes": lambda: QuoteWidget(self.handle_interval_change),
             "Chart": lambda: ChartWidget(self.get_current_theme),
-            "Screener": lambda: ScreenerWidget(self.on_ticker_selected, self.run_and_display_analysis),
+            "Screener": lambda: ScreenerWidget(self.on_ticker_selected),
             "Fundamentals": lambda: FundamentalsWidget(self.data_provider),
             "News": lambda: NewsWidget(self.data_provider),
             "Copilot": lambda: ChatbotWidget(self.get_context),
@@ -1914,6 +1881,11 @@ class TradingTerminal(QMainWindow):
         """Manually refresh ticker snapshot data."""
         self.request_snapshot()
 
+    def auto_refresh_quotes(self):
+        """Auto-refresh quotes for the current ticker."""
+        if self.current_ticker and self.quote_widget:
+            self.request_snapshot()
+
     def request_snapshot(self, ticker: str | None = None):
         """Spawn/refresh background worker for ticker quotes."""
         target = (ticker or self.current_ticker or "").strip()
@@ -1968,77 +1940,6 @@ class TradingTerminal(QMainWindow):
                 accent = mix_colors("#ffffff", pastel, 0.25)
         self.quote_widget.apply_brand_color(accent)
     
-    def run_and_display_analysis(self, ticker: str):
-        """Run strategy analysis and display in chatbot."""
-        if not self.chatbot:
-            return
-        self.chatbot.add_bot_message(f"Analyzing {ticker} for consolidation breakout...")
-        # This should be async in a real app, but for prototype, we do it sync
-        analysis_text = self.get_signal_analysis_text(ticker)
-        self.chatbot.add_bot_message(analysis_text)
-
-    def get_signal_analysis_text(self, ticker: str) -> str:
-        """Fetches data and returns a formatted string of the current signal analysis."""
-        try:
-            df = strategy.fetch_hourly_data(ticker, period_days=30)
-            if df.empty:
-                return f"Could not retrieve data for {ticker}."
-            
-            sigs = strategy.breakout_volume_signals(df)
-            last_sig = sigs.iloc[-1]
-            current_price = df["Close"].iloc[-1]
-            cons_high = float(last_sig["cons_high_prev"]) if not np.isnan(last_sig["cons_high_prev"]) else None
-            cons_low = float(last_sig["cons_low_prev"]) if not np.isnan(last_sig["cons_low_prev"]) else None
-            
-            if bool(last_sig["false_breakout"]):
-                return f"""**{ticker} - FALSE BREAKOUT Signal**
-
-Current Price: ${current_price:.2f}
-Consolidation Range: ${cons_low:.2f} - ${cons_high:.2f}
-
-**Analysis:**
-- Price broke above consolidation high but on LOW volume (< 25th percentile)
-- This suggests liquidity was taken but lacks follow-through
-- **Potential short opportunity** if price rejects and returns below ${cons_high:.2f}
-
-**Risk Management:**
-- Stop: Above recent high
-- Target: Back to consolidation low ${cons_low:.2f}"""
-            
-            elif bool(last_sig["signal"]):
-                return f"""**{ticker} - TRUE BREAKOUT Signal**
-
-Current Price: ${current_price:.2f}
-Consolidation Range: ${cons_low:.2f} - ${cons_high:.2f}
-
-**Analysis:**
-- Price broke above consolidation high with HIGH volume (>= 75th percentile)
-- Strong buying pressure indicates continuation
-- **Long entry opportunity**
-
-**Trade Setup:**
-- Entry: Current price or pullback to ${cons_high:.2f}
-- Stop: ${cons_low:.2f} (consolidation low)
-- Target: ${current_price + (current_price - cons_low) * strategy.RR_TARGET:.2f} (2R target)
-- Risk/Reward: 1:{strategy.RR_TARGET}"""
-            
-            elif bool(last_sig["cons_ok"]):
-                breakout_level = float(last_sig["breakout_level"])
-                dist_pct = ((breakout_level - current_price) / current_price) * 100
-                return f"""**{ticker} - CONSOLIDATION SETUP**
-
-Current Price: ${current_price:.2f}
-Consolidation Range: ${cons_low:.2f} - ${cons_high:.2f}
-Breakout Level: ${breakout_level:.2f}
-Distance to Breakout: {dist_pct:.2f}%
-
-**Status:** Waiting for breakout
-**Action:** Monitor for volume confirmation when price approaches ${breakout_level:.2f}"""
-            else:
-                return f"{ticker} is not showing a setup currently. No consolidation detected in the last {strategy.LOOKBACK_HOURS} hours."
-        except Exception as e:
-            return f"Error analyzing {ticker}: {str(e)}"
-
     def _build_header_button(self, glyph: str, tooltip: str) -> QToolButton:
         btn = QToolButton()
         btn.setObjectName("UtilityIconButton")
@@ -2268,7 +2169,7 @@ Distance to Breakout: {dist_pct:.2f}%
             border-bottom: none;
         }}
         QLabel#DockTitleLabel {{
-            color: {theme['tab_text']};
+            color: {theme['text']};
             font-weight: 600;
             letter-spacing: 0.05em;
         }}
@@ -2311,7 +2212,7 @@ Distance to Breakout: {dist_pct:.2f}%
             background-color: transparent;
             border: 1px solid {theme['divider']};
             border-radius: 4px;
-            color: {theme['tab_text']};
+            color: {theme['text']};
             padding: 0;
         }}
         QToolButton#DockButton:hover, QToolButton#DockIconButton:hover {{
@@ -2324,17 +2225,21 @@ Distance to Breakout: {dist_pct:.2f}%
         QTabBar#DockTabBar::tab {{
             background-color: transparent;
             color: {theme['muted']};
-            padding: 2px 10px;
-            margin-left: 8px;
+            padding: 4px 12px;
+            margin-left: 6px;
             border: 1px solid {theme['divider']};
-            border-radius: 10px;
+            border-radius: 4px;
         }}
         QTabBar#DockTabBar::tab:selected {{
-            color: {theme['text']};
+            background-color: {theme['accent']};
+            color: {theme['button_text']};
             border-color: {theme['accent']};
+            font-weight: 600;
         }}
-        QTabBar#DockTabBar::tab:hover {{
-            color: {theme['accent']};
+        QTabBar#DockTabBar::tab:hover:!selected {{
+            background-color: {theme['accent_hover']};
+            color: {theme['text']};
+            border-color: {theme['divider']};
         }}
         QToolBar#StowBar {{
             background-color: {theme['panel_bg']};
@@ -2492,36 +2397,33 @@ Distance to Breakout: {dist_pct:.2f}%
         self.apply_theme()
     
     def on_ticker_selected(self, ticker: str):
-        """Handle ticker selection from the main screener, ensuring all widgets update correctly."""
-        if not ticker or self.current_ticker == ticker.upper():
-            return
-        
-        ticker = ticker.upper()
+        """Handle ticker selection."""
         self.current_ticker = ticker
-
-        # Directly update the brand accent color.
         self.update_brand_accent(ticker)
-
-        # Explicitly update the main hero widget and other primary displays.
-        # This ensures they always follow the main selection regardless of linking.
-        self.load_widget_ticker("Quotes", ticker)
+        self.load_widget_ticker("Quotes", ticker, propagate=True)
+        # Ensure critical widgets exist (will show existing or create new)
+        if not self.find_dock_for_widget("Chart"):
+            self.ensure_widget("Chart", Qt.DockWidgetArea.RightDockWidgetArea)
+        if not self.find_dock_for_widget("Quotes"):
+            self.ensure_widget("Quotes", Qt.DockWidgetArea.TopDockWidgetArea)
+        if not self.find_dock_for_widget("Fundamentals"):
+            self.ensure_widget("Fundamentals", Qt.DockWidgetArea.BottomDockWidgetArea)
+        if not self.find_dock_for_widget("News"):
+            self.ensure_widget("News", Qt.DockWidgetArea.BottomDockWidgetArea)
         if self.chart_widget:
             self.chart_widget.load_ticker(ticker)
         if self.fundamentals_widget:
             self.fundamentals_widget.load_ticker(ticker)
         if self.news_widget:
             self.news_widget.load_ticker(ticker)
-
-        # Also broadcast the ticker to any widgets the user has explicitly linked to the Screener.
-        self.broadcast_link_update("Screener", ticker)
-
-        # Update associated UI elements.
+        self.request_snapshot()
         if self.quote_widget and self.chart_widget:
             self.quote_widget.set_active_interval(self.chart_widget.current_interval)
+        self.broadcast_link_update("Screener", ticker)
         if self.refresh_button:
             self.refresh_button.setEnabled(True)
         if self.chatbot:
-            self.chatbot.add_bot_message(f"Context updated to {ticker}.")
+            self.chatbot.add_bot_message(f"Loaded {ticker}. Ask me about its signals or strategy!")
     
     def get_context(self) -> dict:
         """Get current context for chatbot - enhanced with more details."""

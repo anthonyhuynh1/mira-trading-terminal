@@ -1,18 +1,24 @@
-# Trading Terminal - AI-Powered Trading Analysis Platform
+# Mira Trading Terminal
 
-A professional desktop trading application with context-aware AI assistant, inspired by TradingView's UI and Cursor's AI capabilities.
+A beautiful, fast desktop trading terminal built with PyQt6.
 
-## 🎯 Features
+## Features
 
-- **TradingView-like Dark Theme**: Professional, easy-on-the-eyes interface
-- **Candlestick Charts**: Full OHLCV visualization with breakout signals
-- **Multiple Timeframes**: Switch between 1h, 4h, and daily charts
-- **Context-Aware AI**: Chatbot understands what you're viewing and provides relevant analysis
-- **Signal Detection**: True/false breakout detection with dynamic volume thresholds
-- **Fundamentals & News**: Integrated company data and news feed
-- **No Auto-Trading**: Analysis and education only - you make the decisions
+- **Live Market Data**: Real-time quotes, charts, and market status
+- **TradingView Integration**: Professional-grade charts with multiple timeframes
+- **Customizable Layout**: Drag-and-drop docking system with floating windows
+- **Link Groups**: Synchronize multiple widgets to the same ticker
+- **Dark/Light Themes**: Pure black/white aesthetic with brand color accents
+- **Multiple Widgets**:
+  - Quote card with live prices
+  - Interactive TradingView charts
+  - Watchlist/Screener
+  - Fundamentals (P/E, market cap, etc.)
+  - Latest news headlines
+  - AI-powered chatbot copilot
+  - Multi-timezone market clock
 
-## 🚀 Quick Start
+## Quick Start
 
 ### Installation
 
@@ -20,96 +26,81 @@ A professional desktop trading application with context-aware AI assistant, insp
 pip install -r requirements.txt
 ```
 
-**Note:** PyQt6-WebEngine is required for TradingView charts. If you encounter issues, install it separately:
-```bash
-pip install PyQt6-WebEngine
-```
-
 ### Run
 
-**Option 1: Using the run script (easiest)**
+```bash
+python trading_app.py
+```
+
+Or use the run script:
 ```bash
 ./run.sh
 ```
 
-**Option 2: Manual activation**
-```bash
-# From parent directory
-source .venv/bin/activate
-cd trading-terminal
-python trading_app.py
-```
+## Requirements
 
-## 📐 Architecture
+- Python 3.10+
+- PyQt6
+- PyQt6-WebEngine
+- yfinance
+- numpy
+- websockets
 
-- **Left Sidebar**: Stock screener and watchlist
-- **Main Panel**: Interactive charts with tabs (Chart | Fundamentals | News)
-- **Right Sidebar**: Context-aware AI chatbot
+See `requirements.txt` for complete list.
 
-## 🎨 UI Components
+## Architecture
 
-### Chart Features
-- **TradingView Advanced Chart Widget** - official charting experience
-- Candlestick visualization with the full TradingView toolbar
-- Consolidation bands (support/resistance)
-- True breakout signals (high volume) - marked on chart
-- False breakout signals (low volume) - marked on chart
-- Multiple timeframes (1h, 4h, 1d)
-- Zoom, pan, and crosshair functionality
-- Light/Dark theme toggle with curated palettes
-- Dockable panels (watchlist, assistant) you can move/rescale
+The app is built with a modular widget system:
 
-### AI Assistant
-- Explains signals and patterns
-- Provides trade setup analysis
-- Answers strategy questions
-- Context-aware responses based on current ticker/timeframe
+- **TradingTerminal**: Main window with docking manager
+- **WorkspaceDock**: Custom dock widgets with inline tabs
+- **TickerDataProvider**: Centralized caching layer for market data
+- **SnapshotWorker**: Background threads for non-blocking data fetching
 
-## 📊 Strategy
+All widgets support:
+- Theme switching (dark/light)
+- Link groups for ticker synchronization
+- Drag-and-drop repositioning
+- Minimize/expand/float controls
 
-**Consolidation + Breakout + Volume Strategy**
+See `ARCHITECTURE.md` for detailed technical overview.
 
-1. Identifies tight consolidations (≤ 2% range)
-2. Detects breakouts above consolidation high
-3. Confirms with volume:
-   - High volume (≥ 75th percentile) = True breakout (long)
-   - Low volume (< 25th percentile) = False breakout (short opportunity)
-4. Risk management: Stop at consolidation low, target at 2R
+## Usage
 
-## 🔧 Tech Stack
+1. **Search for a ticker**: Use the Screener widget to find stocks
+2. **Click to select**: Selected ticker updates all linked widgets
+3. **Customize layout**: Drag docks to reposition, float windows
+4. **Link groups**: Right-click dock → Link Group → Choose 1-6
+5. **Theme toggle**: Click sun/moon icon in header
 
-- **PyQt6**: Desktop GUI framework
-- **PyQt6-WebEngine**: Web view for TradingView charts
-- **TradingView Lightweight Charts**: Free, open-source professional charting library
-- **alpaca-trade-api**: Market data and trading (free for paper trading)
-- **Pandas/NumPy**: Data processing
-
-## 📝 Project Structure
+## Project Structure
 
 ```
 trading-terminal/
-├── trading_app.py      # Main application
-├── strategy.py         # Strategy logic and signal generation
-├── requirements.txt    # Dependencies
-└── README.md          # This file
+├── trading_app.py          # Main application (2,436 lines)
+├── strategy.py             # Consolidation/breakout detection
+├── requirements.txt        # Python dependencies
+├── run.sh                  # Launch script
+├── docs/                   # Documentation
+├── legacy/                 # Old versions (archived)
+└── venv/                   # Python virtual environment
 ```
 
-## 🗺️ Roadmap
+## Development
 
-- [x] Basic UI with dark theme
-- [x] Candlestick charts
-- [x] Timeframe selector
-- [x] Context-aware AI
-- [ ] Pattern recognition
-- [ ] Drawing tools
-- [ ] More indicators
-- [ ] Alpaca API integration (when ready)
+The app uses PyQt6's signal/slot mechanism for communication between widgets. Key patterns:
 
-## ⚠️ Disclaimer
+- **Data fetching**: Always use background QThreads to avoid UI freezing
+- **Theming**: Check `self.window().current_theme` and apply styles dynamically
+- **Link groups**: Emit signals through main window's link group manager
 
-This platform is for **analysis and education only**. It does not execute trades. All trading decisions are your own responsibility. Past performance does not guarantee future results.
+## Known Issues
 
-## 📄 License
+- Some stocks may not have complete fundamental data (yfinance limitation)
+- TradingView charts require internet connection
+- Market status updates every 60 seconds
 
-MIT License - Feel free to use and modify.
+## License
+
+Personal project - use freely.
 

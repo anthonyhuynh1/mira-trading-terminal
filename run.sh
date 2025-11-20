@@ -14,7 +14,11 @@ else
         exit 1                                                             
     fi                                                                     
                                                                             
-    # Change to trading-terminal directory and run                         
-    cd "$SCRIPT_DIR"                                                       
+    # Change to trading-terminal directory and run
+    cd "$SCRIPT_DIR"
+
+    # Set Qt plugin path for PyQt6 on macOS
+    export QT_PLUGIN_PATH=/opt/anaconda3/lib/python3.13/site-packages/PyQt6/Qt6/plugins
+
     python3 trading_app.py
 

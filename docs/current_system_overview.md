@@ -9,16 +9,16 @@
 - Inline tab pills (custom `QTabBar`) live in the same header, so adding a widget from a dock simply stacks it into the dock’s own `QStackedWidget`; switching tabs is instantaneous and keeps the single-header aesthetic.
 
 ## Live Data & Background Work
-- `SnapshotWorker` (QThread) fetches hero quote snapshots from `Alpaca API`. Results hydrate hero stats, apply dynamic brand accent, and drive status badges.
+- `SnapshotWorker` (QThread) fetches hero quote snapshots from `yfinance` (fast_info + info fallback). Results hydrate hero stats, apply dynamic brand accent, and drive status badges.
 - TradingView `QWebEngineView` embed caches last (ticker, interval, theme) signature to avoid redundant reloads; theme refresh resets the cache.
 - Strategy helpers (`strategy.py`) provide ticker universe, consolidation/breakout analytics leveraged by Screener and Copilot context.
-- `TickerDataProvider` centralizes all `Alpaca API` calls with coarse TTL caches (snapshots, fundamentals, news) so widgets reuse payloads instead of hammering the network/UI thread.
+- `TickerDataProvider` centralizes all `yfinance` calls with coarse TTL caches (snapshots, fundamentals, news) so widgets reuse payloads instead of hammering the network/UI thread.
 
 ## Core Widgets
 - **QuoteWidget**: hero stats (price/change/volume/range) plus market status badge and interval awareness.
 - **ChartWidget**: TradingView advanced chart embed with interval switching, theme-aware backgrounds.
 - **ScreenerWidget**: search, quick filters, “Scan Universe” stub, watchlist list, broadcasts selections through link system.
-- **FundamentalsWidget**: tabular metrics (market cap, P/E, EPS, div yield, 52-week stats, volume, beta) fetched via `Alpaca API`.
+- **FundamentalsWidget**: tabular metrics (market cap, P/E, EPS, div yield, 52-week stats, volume, beta) fetched via `yfinance`.
 - **NewsWidget**: latest headlines/time stamps per ticker (fallback message when empty or error).
 - **ChatbotWidget (Copilot)**: context-aware assistant using strategy data, handles breakout explanations, risk framing, etc.
 - **MarketClockWidget**: timezone selector (NYSE/LSE/TSE), per-market open/pre/after status, continuous timer.
@@ -29,6 +29,6 @@
 - Widgets hide internal headers when tabified, showing only the shared dock tab strip; selections broadcast to linked docks, ensuring quotes/charts/fundamentals stay in sync.
 
 ## Known Assets & Tech Stack
-- Python 3, PyQt6 (Widgets + WebEngine), `alpaca-trade-api`, TradingView JS embed, strategy analytics module, minimal requirements in `requirements.txt`.
+- Python 3, PyQt6 (Widgets + WebEngine), `yfinance`, TradingView JS embed, strategy analytics module, minimal requirements in `requirements.txt`.
 - Global env tweaks (`QTWEBENGINE_CHROMIUM_FLAGS=--disable-gpu`, `AA_ShareOpenGLContexts`) ensure macOS reliability with WebEngine.
 
