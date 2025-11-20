@@ -22,8 +22,8 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QSizePolicy, QFrame, QToolButton, QMenu, QToolBar,
                              QComboBox, QTabWidget, QTabBar, QStackedWidget,
                              QStyle)
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QSize, QEvent
-from PyQt6.QtGui import QFont, QAction, QIcon, QCursor
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QSize, QEvent, QMimeData
+from PyQt6.QtGui import QFont, QAction, QIcon, QCursor, QDrag
 from threading import Lock
 from typing import Callable, Dict
 from PyQt6.QtWebEngineWidgets import QWebEngineView
@@ -43,24 +43,24 @@ TOUCH_TARGET = 44
 
 THEMES = {
     "dark": {
-        "window_bg": "#000000",
-        "panel_bg": "#000000",
-        "surface": "#000000",
-        "surface_alt": "#000000",
+        "window_bg": "#0a0a0a",
+        "panel_bg": "#0a0a0a",
+        "surface": "#0a0a0a",
+        "surface_alt": "#141414",
         "border": "#ffffff",
         "text": "#ffffff",
-        "muted": "#ffffff",
+        "muted": "#9ca3af",
         "accent": "#ffffff",
-        "accent_hover": "#000000",
+        "accent_hover": "#1f1f1f",
         "button_text": "#000000",
         "button_hover_text": "#ffffff",
-        "input_bg": "#000000",
-        "tab_bg": "#17171b",
-        "tab_text": "#f5f5f5",
+        "input_bg": "#0a0a0a",
+        "tab_bg": "#1a1a1a",
+        "tab_text": "#ffffff",
         "chart_theme": "dark",
-        "chart_bg": "#000000",
-        "chart_toolbar": "#000000",
-        "divider": "#ffffff"
+        "chart_bg": "#0a0a0a",
+        "chart_toolbar": "#0a0a0a",
+        "divider": "#2a2a2a"
     },
     "light": {
         "window_bg": "#ffffff",
@@ -366,6 +366,11 @@ class WorkspaceDock(QDockWidget):
         self.tab_widgets: dict[str, QWidget] = {}
         self.tab_order: list[str] = []
 
+        # Drag-and-drop state
+        self._drag_start_pos = None
+        self._dragging_tab_index = -1
+        self._drop_highlight_active = False
+
         self._init_title_bar()
         self._init_body()
         self.add_tab(initial_key, widget, initial_key)
@@ -373,6 +378,7 @@ class WorkspaceDock(QDockWidget):
     def _init_title_bar(self):
         title_bar = QWidget()
         title_bar.setObjectName("DockTitleBar")
+        title_bar.setAcceptDrops(True)
         layout = QHBoxLayout(title_bar)
         layout.setContentsMargins(12, 6, 8, 6)
         layout.setSpacing(6)
@@ -390,6 +396,11 @@ class WorkspaceDock(QDockWidget):
         self.tab_bar.setUsesScrollButtons(True)
         self.tab_bar.currentChanged.connect(self._on_tab_changed)
         self.tab_bar.tabMoved.connect(self._on_tab_moved)
+
+        # Enable drag-and-drop for tabs
+        self.tab_bar.setAcceptDrops(True)
+        self.tab_bar.installEventFilter(self)
+
         layout.addWidget(self.tab_bar, stretch=1)
 
         self.menu_btn = self._create_options_button()
@@ -460,9 +471,39 @@ class WorkspaceDock(QDockWidget):
         if self._options_menu:
             self._options_menu.deleteLater()
         menu = QMenu(self)
-        add_action = menu.addAction("Add Widget…")
+
+        # Webull-style menu structure
+        current_tab = self.current_tab_key() or "Widget"
+
+        # Add Widget submenu
+        add_action = menu.addAction("Add a Widget")
         add_action.triggered.connect(self._handle_add_widget)
+
+        # Copy Widget
+        copy_action = menu.addAction(f"Copy {current_tab}")
+        copy_action.triggered.connect(self._handle_copy_widget)
+        copy_action.setEnabled(False)  # TODO: implement copy functionality
+
         menu.addSeparator()
+
+        # Minimize
+        minimize_action = menu.addAction("Minimize")
+        minimize_action.triggered.connect(self.toggle_collapsed)
+
+        # Maximize
+        maximize_action = menu.addAction("Maximize")
+        maximize_action.triggered.connect(self.expand_to_fill)
+
+        # Detach/Float
+        if self.isFloating():
+            detach_action = menu.addAction("Dock")
+        else:
+            detach_action = menu.addAction("Detach")
+        detach_action.triggered.connect(self._toggle_floating)
+
+        menu.addSeparator()
+
+        # Link Group submenu
         link_menu = menu.addMenu("Link Group")
         none_action = link_menu.addAction("No Link")
         none_action.setCheckable(True)
@@ -473,11 +514,19 @@ class WorkspaceDock(QDockWidget):
             action.setCheckable(True)
             action.setChecked(self._link_group == group)
             action.triggered.connect(lambda checked=False, g=group: self._set_link_group(g))
+
         menu.addSeparator()
-        float_action = menu.addAction("Float / Dock")
-        float_action.triggered.connect(self._toggle_floating)
+
+        # Remove Widget
+        remove_action = menu.addAction(f"Remove {current_tab}")
+        remove_action.triggered.connect(self._handle_close_clicked)
+
         self.menu_btn.setMenu(menu)
         self._options_menu = menu
+
+    def _handle_copy_widget(self):
+        """Copy current widget to a new dock (TODO: implement)"""
+        pass
 
     def _handle_add_widget(self):
         if self.widget_menu_callback:
@@ -615,15 +664,141 @@ class WorkspaceDock(QDockWidget):
 
     def eventFilter(self, obj, event):
         if obj is self.titleBarWidget():
-            if event.type() == QEvent.Type.MouseButtonDblClick and event.button() == Qt.MouseButton.LeftButton:
-                self._toggle_floating()
+            # Right-click to show context menu
+            if event.type() == QEvent.Type.ContextMenu:
+                self._show_context_menu(event.globalPos())
                 return True
+            # Double-click to maximize/restore
+            if event.type() == QEvent.Type.MouseButtonDblClick and event.button() == Qt.MouseButton.LeftButton:
+                self.expand_to_fill()
+                return True
+            # Accept drag-and-drop on title bar
+            if event.type() == QEvent.Type.DragEnter:
+                if event.mimeData().hasFormat("application/x-mira-tab"):
+                    event.acceptProposedAction()
+                    self._set_drop_highlight(True)
+                    return True
+            elif event.type() == QEvent.Type.DragLeave:
+                self._set_drop_highlight(False)
+                return True
+            elif event.type() == QEvent.Type.DragMove:
+                if event.mimeData().hasFormat("application/x-mira-tab"):
+                    event.acceptProposedAction()
+                    return True
+            elif event.type() == QEvent.Type.Drop:
+                if event.mimeData().hasFormat("application/x-mira-tab"):
+                    self._set_drop_highlight(False)
+                    self._handle_tab_drop(event)
+                    return True
             if event.type() in (QEvent.Type.MouseButtonPress,
                                 QEvent.Type.MouseButtonRelease,
                                 QEvent.Type.MouseMove):
                 QApplication.sendEvent(self, event)
                 return False
+
+        # Handle tab bar drag-and-drop
+        if obj is self.tab_bar:
+            if event.type() == QEvent.Type.MouseButtonPress:
+                if event.button() == Qt.MouseButton.LeftButton:
+                    self._drag_start_pos = event.pos()
+                    self._dragging_tab_index = self.tab_bar.tabAt(event.pos())
+            elif event.type() == QEvent.Type.MouseMove:
+                if (event.buttons() & Qt.MouseButton.LeftButton) and self._drag_start_pos:
+                    # Check if we've moved far enough to start a drag
+                    if (event.pos() - self._drag_start_pos).manhattanLength() > 10:
+                        self._start_tab_drag()
+                        return True
+            elif event.type() == QEvent.Type.DragEnter:
+                if event.mimeData().hasFormat("application/x-mira-tab"):
+                    event.acceptProposedAction()
+                    self._set_drop_highlight(True)
+                    return True
+            elif event.type() == QEvent.Type.DragLeave:
+                self._set_drop_highlight(False)
+                return True
+            elif event.type() == QEvent.Type.DragMove:
+                if event.mimeData().hasFormat("application/x-mira-tab"):
+                    event.acceptProposedAction()
+                    return True
+            elif event.type() == QEvent.Type.Drop:
+                if event.mimeData().hasFormat("application/x-mira-tab"):
+                    self._set_drop_highlight(False)
+                    self._handle_tab_drop(event)
+                    return True
+
         return super().eventFilter(obj, event)
+
+    def _show_context_menu(self, global_pos):
+        """Show Webull-style context menu on right-click"""
+        if self._options_menu:
+            self._rebuild_options_menu()  # Refresh menu state
+            self._options_menu.exec(global_pos)
+
+    def _set_drop_highlight(self, active: bool):
+        """Toggle visual highlight for valid drop zones"""
+        if self._drop_highlight_active == active:
+            return
+
+        self._drop_highlight_active = active
+        title_bar = self.titleBarWidget()
+
+        if title_bar:
+            title_bar.setProperty("drop_active", active)
+            title_bar.style().unpolish(title_bar)
+            title_bar.style().polish(title_bar)
+
+        if hasattr(self, "tab_bar"):
+            self.tab_bar.setProperty("drop_active", active)
+            self.tab_bar.style().unpolish(self.tab_bar)
+            self.tab_bar.style().polish(self.tab_bar)
+
+    def _start_tab_drag(self):
+        """Start dragging a tab to another dock"""
+        if self._dragging_tab_index < 0 or self._dragging_tab_index >= len(self.tab_order):
+            return
+
+        drag = QDrag(self.tab_bar)
+        mime_data = QMimeData()
+
+        # Store the source dock ID and tab key
+        tab_key = self.tab_order[self._dragging_tab_index]
+        data = f"{self.dock_id}|{tab_key}"
+        mime_data.setData("application/x-mira-tab", data.encode())
+        mime_data.setText(tab_key)
+
+        drag.setMimeData(mime_data)
+
+        # Change cursor during drag
+        QApplication.setOverrideCursor(Qt.CursorShape.DragMoveCursor)
+
+        # Start the drag operation
+        result = drag.exec(Qt.DropAction.MoveAction)
+
+        # Restore cursor
+        QApplication.restoreOverrideCursor()
+
+        # Reset drag state
+        self._drag_start_pos = None
+        self._dragging_tab_index = -1
+
+    def _handle_tab_drop(self, event):
+        """Handle a tab being dropped onto this dock"""
+        mime_data = event.mimeData()
+        if not mime_data.hasFormat("application/x-mira-tab"):
+            return
+
+        data = mime_data.data("application/x-mira-tab").data().decode()
+        source_dock_id, tab_key = data.split("|", 1)
+
+        # Don't merge with self
+        if source_dock_id == self.dock_id:
+            return
+
+        # Find the main window and merge the tabs
+        main_window = self.window()
+        if hasattr(main_window, "merge_dock_tabs"):
+            main_window.merge_dock_tabs(source_dock_id, tab_key, self.dock_id)
+            event.acceptProposedAction()
 
     def set_link_group_display(self, group: int | None):
         self._link_group = group
@@ -1650,6 +1825,32 @@ class TradingTerminal(QMainWindow):
         else:
             self.ensure_widget(key)
 
+    def merge_dock_tabs(self, source_dock_id: str, tab_key: str, target_dock_id: str):
+        """Merge a tab from source dock into target dock via drag-and-drop"""
+        source_dock = self.dock_by_id.get(source_dock_id)
+        target_dock = self.dock_by_id.get(target_dock_id)
+
+        if not source_dock or not target_dock or source_dock is target_dock:
+            return
+
+        # Move the tab from source to target
+        widget = source_dock.take_tab(tab_key)
+        if not widget:
+            return
+
+        # Add to target dock
+        target_dock.add_tab(tab_key, widget, tab_key)
+
+        # Update the mapping
+        self.dock_widgets[tab_key] = target_dock
+
+        # Close source dock if it's now empty
+        if source_dock.is_empty():
+            source_dock.close()
+
+        # Refresh link group display
+        target_dock.set_link_group_display(self.widget_link_groups.get(tab_key))
+
     def add_widget_tab(self, target_dock: WorkspaceDock, key: str):
         if not target_dock:
             return
@@ -2168,6 +2369,9 @@ class TradingTerminal(QMainWindow):
         QWidget#DockTitleBar[tabbed="true"] {{
             border-bottom: none;
         }}
+        QWidget#DockTitleBar[drop_active="true"] {{
+            border-bottom: 2px solid {theme['accent']};
+        }}
         QLabel#DockTitleLabel {{
             color: {theme['text']};
             font-weight: 600;
@@ -2221,6 +2425,9 @@ class TradingTerminal(QMainWindow):
         }}
         QTabBar#DockTabBar {{
             background: transparent;
+        }}
+        QTabBar#DockTabBar[drop_active="true"] {{
+            /* No visual change - title bar line is enough */
         }}
         QTabBar#DockTabBar::tab {{
             background-color: transparent;
