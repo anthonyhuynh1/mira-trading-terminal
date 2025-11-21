@@ -39,4 +39,7 @@ Thumbs.db
 *.db
 config.ini
 .env
+*.backup
+legacy/
+webull.mp4
 

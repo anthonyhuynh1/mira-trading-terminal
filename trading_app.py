@@ -1,1707 +1,47 @@
 """
-Trading Terminal Application - Cursor-like Interface
+Trading Terminal Application - Modular Architecture
 Left: Stock Screener | Main: Charts/Fundamentals/News | Right: Context-Aware Chatbot
 """
 
 import sys
 import warnings
-import colorsys
+import traceback
+from pathlib import Path
 from collections import defaultdict
-from datetime import datetime, time, timedelta
-from zoneinfo import ZoneInfo
+from datetime import datetime
+from typing import Callable, Dict
+
 warnings.filterwarnings("ignore")
 
 import os
-
 os.environ.setdefault("QTWEBENGINE_CHROMIUM_FLAGS", "--disable-gpu")
 
-from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
-                             QHBoxLayout, QTextEdit, QLineEdit,
-                             QPushButton, QListWidget, QLabel, QTableWidget,
-                             QTableWidgetItem, QHeaderView, QDockWidget,
-                             QSizePolicy, QFrame, QToolButton, QMenu, QToolBar,
-                             QComboBox, QTabWidget, QTabBar, QStackedWidget,
-                             QStyle)
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QSize, QEvent, QMimeData
-from PyQt6.QtGui import QFont, QAction, QIcon, QCursor, QDrag
-from threading import Lock
-from typing import Callable, Dict
-from PyQt6.QtWebEngineWidgets import QWebEngineView
-from PyQt6.QtWebEngineCore import QWebEngineSettings
-
-
-
-# Import our existing strategy code
-import strategy
-import yfinance as yf
-import numpy as np
-
-
-BASE_RADIUS = 12
-BASE_SPACING = 12
-TOUCH_TARGET = 44
-
-THEMES = {
-    "dark": {
-        "window_bg": "#0a0a0a",
-        "panel_bg": "#0a0a0a",
-        "surface": "#0a0a0a",
-        "surface_alt": "#141414",
-        "border": "#ffffff",
-        "text": "#ffffff",
-        "muted": "#9ca3af",
-        "accent": "#ffffff",
-        "accent_hover": "#1f1f1f",
-        "button_text": "#000000",
-        "button_hover_text": "#ffffff",
-        "input_bg": "#0a0a0a",
-        "tab_bg": "#1a1a1a",
-        "tab_text": "#ffffff",
-        "chart_theme": "dark",
-        "chart_bg": "#0a0a0a",
-        "chart_toolbar": "#0a0a0a",
-        "divider": "#2a2a2a"
-    },
-    "light": {
-        "window_bg": "#ffffff",
-        "panel_bg": "#ffffff",
-        "surface": "#ffffff",
-        "surface_alt": "#f9fafb",
-        "border": "#000000",
-        "text": "#000000",
-        "muted": "#6b7280",
-        "accent": "#000000",
-        "accent_hover": "#f3f4f6",
-        "button_text": "#ffffff",
-        "button_hover_text": "#000000",
-        "input_bg": "#ffffff",
-        "tab_bg": "#f5f5f5",
-        "tab_text": "#000000",
-        "chart_theme": "light",
-        "chart_bg": "#ffffff",
-        "chart_toolbar": "#ffffff",
-        "divider": "#e5e7eb"
-    }
-}
-
-BRAND_COLORS = {
-    "NVDA": "#76b900",
-    "AAPL": "#a2aaad",
-    "TSLA": "#e82127",
-    "MSFT": "#00a4ef",
-    "AMZN": "#ff9900",
-    "META": "#0a66ff",
-    "GOOG": "#1a73e8",
-    "NFLX": "#e50914",
-    "SPY": "#1159a4",
-    "QQQ": "#5c6bc0",
-    "AMD": "#ff6f00",
-}
-
-
-def hex_to_rgb(hex_color: str) -> tuple[int, int, int]:
-    hex_color = hex_color.lstrip("#")
-    if len(hex_color) == 3:
-        hex_color = "".join(c * 2 for c in hex_color)
-    r = int(hex_color[0:2], 16)
-    g = int(hex_color[2:4], 16)
-    b = int(hex_color[4:6], 16)
-    return r, g, b
-
-
-def rgb_to_hex(rgb: tuple[int, int, int]) -> str:
-    return "#{:02x}{:02x}{:02x}".format(*rgb)
-
-
-def mix_colors(color_a: str, color_b: str, ratio: float) -> str:
-    r1, g1, b1 = hex_to_rgb(color_a)
-    r2, g2, b2 = hex_to_rgb(color_b)
-    r = int(r1 * (1 - ratio) + r2 * ratio)
-    g = int(g1 * (1 - ratio) + g2 * ratio)
-    b = int(b1 * (1 - ratio) + b2 * ratio)
-    return rgb_to_hex((r, g, b))
-
-
-def soften_color(color: str, amount: float = 0.4) -> str:
-    return mix_colors(color, "#ffffff", amount)
-
-
-def darken_color(color: str, amount: float = 0.15) -> str:
-    return mix_colors(color, "#000000", amount)
-
-
-def hsv_to_hex(h: float, s: float, v: float) -> str:
-    r, g, b = colorsys.hsv_to_rgb(h, s, v)
-    return "#{:02x}{:02x}{:02x}".format(int(r * 255), int(g * 255), int(b * 255))
-
-
-def ticker_hash_color(ticker: str) -> str:
-    if not ticker:
-        return "#888888"
-    ticker = ticker.upper()
-    seed = 0
-    for ch in ticker:
-        seed = (seed * 31 + ord(ch)) % 360
-    hue = seed / 360.0
-    saturation = 0.35
-    value = 0.78
-    return hsv_to_hex(hue, saturation, value)
-
-
-def ideal_text_color(hex_color: str) -> str:
-    if not hex_color:
-        return "#000000"
-    r, g, b = hex_to_rgb(hex_color)
-    luminance = (0.299 * r + 0.587 * g + 0.114 * b)
-    return "#000000" if luminance > 150 else "#ffffff"
-
-
-class TickerDataProvider:
-    """Centralized, cache-aware access layer for yfinance payloads."""
-
-    SNAPSHOT_TTL = timedelta(seconds=15)
-    FUNDAMENTALS_TTL = timedelta(minutes=8)
-    NEWS_TTL = timedelta(minutes=2)
-
-    def __init__(self):
-        self._lock = Lock()
-        self._snapshot_cache: dict[str, tuple[datetime, dict]] = {}
-        self._fundamentals_cache: dict[str, tuple[datetime, dict]] = {}
-        self._news_cache: dict[str, tuple[datetime, dict]] = {}
-        self._ticker_handles: dict[str, yf.Ticker] = {}
-
-    def fetch_snapshot_payload(self, ticker: str) -> dict:
-        symbol = (ticker or "").strip().upper()
-        if not symbol:
-            return {"symbol": "", "status": "No symbol"}
-        cached = self._get_cached(self._snapshot_cache, symbol, self.SNAPSHOT_TTL)
-        if cached:
-            return cached
-        payload = self._build_snapshot(symbol)
-        self._store_cached(self._snapshot_cache, symbol, payload)
-        return payload
-
-    def fetch_fundamentals_payload(self, ticker: str) -> dict:
-        symbol = (ticker or "").strip().upper()
-        if not symbol:
-            return {"ticker": "", "error": "No ticker provided"}
-        cached = self._get_cached(self._fundamentals_cache, symbol, self.FUNDAMENTALS_TTL)
-        if cached:
-            return cached
-        payload = self._build_fundamentals(symbol)
-        self._store_cached(self._fundamentals_cache, symbol, payload)
-        return payload
-
-    def fetch_news_payload(self, ticker: str) -> dict:
-        symbol = (ticker or "").strip().upper()
-        if not symbol:
-            return {"ticker": "", "items": []}
-        cached = self._get_cached(self._news_cache, symbol, self.NEWS_TTL)
-        if cached:
-            return cached
-        payload = self._build_news(symbol)
-        self._store_cached(self._news_cache, symbol, payload)
-        return payload
-
-    def _get_cached(self, cache: dict, symbol: str, ttl: timedelta) -> dict | None:
-        with self._lock:
-            entry = cache.get(symbol)
-            if not entry:
-                return None
-            ts, payload = entry
-            if datetime.utcnow() - ts > ttl:
-                cache.pop(symbol, None)
-                return None
-            return payload
-
-    def _store_cached(self, cache: dict, symbol: str, payload: dict):
-        with self._lock:
-            cache[symbol] = (datetime.utcnow(), payload)
-
-    def _ticker_handle(self, symbol: str) -> yf.Ticker:
-        with self._lock:
-            handle = self._ticker_handles.get(symbol)
-            if handle is None:
-                handle = yf.Ticker(symbol)
-                self._ticker_handles[symbol] = handle
-            return handle
-
-    def _build_snapshot(self, symbol: str) -> dict:
-        snapshot = {"symbol": symbol}
-        try:
-            handle = self._ticker_handle(symbol)
-            fast_info = dict(getattr(handle, "fast_info", {}) or {})
-            try:
-                info = handle.info
-            except Exception:
-                info = {}
-
-            price = (fast_info.get("last_price") or fast_info.get("lastPrice") or
-                     fast_info.get("lastSalePrice") or info.get("regularMarketPrice") or
-                     info.get("currentPrice"))
-            prev_close = (fast_info.get("previous_close") or fast_info.get("previousClose") or
-                          info.get("previousClose"))
-
-            if price is not None and prev_close:
-                change = price - prev_close
-                change_pct = (change / prev_close) * 100 if prev_close else None
-            else:
-                change = None
-                change_pct = None
-
-            volume = (fast_info.get("volume") or info.get("volume") or
-                      info.get("averageVolume"))
-            high_52 = fast_info.get("yearHigh") or info.get("fiftyTwoWeekHigh")
-            low_52 = fast_info.get("yearLow") or info.get("fiftyTwoWeekLow")
-
-            snapshot.update({
-                "name": info.get("shortName") or info.get("longName") or symbol,
-                "price": price,
-                "change": change,
-                "change_pct": change_pct,
-                "volume": volume,
-                "volume_label": "Session volume" if fast_info.get("volume") else "Avg volume",
-                "time": datetime.now().strftime("%b %d - %H:%M"),
-                "status": self._market_status_text(fast_info, info),
-            })
-
-            if high_52 and low_52:
-                snapshot["range"] = f"${low_52:,.0f} - ${high_52:,.0f}"
-                snapshot["range_label"] = "52W range"
-            else:
-                snapshot["range"] = None
-        except Exception as exc:
-            snapshot["status"] = "Data issue"
-            snapshot["range"] = None
-            snapshot["error"] = str(exc)
-        return snapshot
-
-    def _build_fundamentals(self, symbol: str) -> dict:
-        try:
-            handle = self._ticker_handle(symbol)
-            info = handle.info
-            metrics = [
-                ("Market Cap", info.get("marketCap", "N/A")),
-                ("P/E Ratio", info.get("trailingPE", "N/A")),
-                ("Forward P/E", info.get("forwardPE", "N/A")),
-                ("EPS", info.get("trailingEps", "N/A")),
-                ("Dividend Yield", f"{info.get('dividendYield', 0) * 100:.2f}%"
-                 if info.get('dividendYield') else "N/A"),
-                ("52 Week High", f"${info.get('fiftyTwoWeekHigh', 'N/A')}"),
-                ("52 Week Low", f"${info.get('fiftyTwoWeekLow', 'N/A')}"),
-                ("Volume (Avg)", info.get("averageVolume", "N/A")),
-                ("Beta", info.get("beta", "N/A")),
-            ]
-            return {"ticker": symbol, "metrics": metrics}
-        except Exception as exc:
-            return {"ticker": symbol, "error": str(exc)}
-
-    def _build_news(self, symbol: str) -> dict:
-        try:
-            handle = self._ticker_handle(symbol)
-            news_items = getattr(handle, "news", None) or []
-            items = []
-            for item in news_items[:12]:
-                title = item.get("title", "No title")
-                timestamp = item.get("providerPublishTime", 0) or 0
-                date_str = datetime.fromtimestamp(timestamp).strftime("%b %d") if timestamp else "--"
-                items.append(f"[{date_str}] {title}")
-            return {"ticker": symbol, "items": items}
-        except Exception as exc:
-            return {"ticker": symbol, "error": str(exc)}
-
-    @staticmethod
-    def _market_status_text(fast_info: dict, info: dict) -> str:
-        state = (fast_info.get("market_state") or fast_info.get("marketState") or
-                 info.get("marketState") or "Live data")
-        state = str(state).replace("_", " ")
-        return state.title()
-
-
-class SnapshotWorker(QThread):
-    """Background worker to fetch ticker snapshots off the UI thread."""
-
-    result_ready = pyqtSignal(dict)
-
-    def __init__(self, fetch_callable: Callable[[], dict]):
-        super().__init__()
-        self.fetch_callable = fetch_callable
-
-    def run(self):
-        try:
-            snapshot = self.fetch_callable()
-        except Exception as exc:
-            snapshot = {"status": "Data issue", "error": str(exc)}
-        self.result_ready.emit(snapshot)
-
-
-class WorkspaceDock(QDockWidget):
-    """Dock widget with Mira header, inline tabs, and stacked content."""
-
-    closed = pyqtSignal(object)
-    collapsed_changed = pyqtSignal(object, bool)
-    tab_removed = pyqtSignal(str)
-    tab_added = pyqtSignal(str)
-    active_tab_changed = pyqtSignal(str)
-
-    def __init__(self, dock_id: str, initial_key: str, widget: QWidget, parent: QMainWindow,
-                 link_callback: Callable[[str, int | None], None] | None = None,
-                 widget_menu_callback: Callable[[object, QWidget | None], None] | None = None):
-        super().__init__(initial_key, parent)
-        self.dock_id = dock_id
-        self.setObjectName(dock_id)
-        self.setContentsMargins(0, 0, 0, 0)
-        self.setAllowedAreas(Qt.DockWidgetArea.AllDockWidgetAreas)
-        self.setFeatures(
-            QDockWidget.DockWidgetFeature.DockWidgetClosable |
-            QDockWidget.DockWidgetFeature.DockWidgetMovable |
-            QDockWidget.DockWidgetFeature.DockWidgetFloatable
-        )
-        self.collapsed = False
-        self._collapsed_height = 48
-        self.link_callback = link_callback
-        self.widget_menu_callback = widget_menu_callback
-        self._link_group: int | None = None
-        self._options_menu: QMenu | None = None
-        self.tab_widgets: dict[str, QWidget] = {}
-        self.tab_order: list[str] = []
-
-        # Drag-and-drop state
-        self._drag_start_pos = None
-        self._dragging_tab_index = -1
-        self._drop_highlight_active = False
-
-        self._init_title_bar()
-        self._init_body()
-        self.add_tab(initial_key, widget, initial_key)
-
-    def _init_title_bar(self):
-        title_bar = QWidget()
-        title_bar.setObjectName("DockTitleBar")
-        title_bar.setAcceptDrops(True)
-        layout = QHBoxLayout(title_bar)
-        layout.setContentsMargins(12, 6, 8, 6)
-        layout.setSpacing(6)
-
-        self.title_label = QLabel("")
-        self.title_label.setObjectName("DockTitleLabel")
-        self.title_label.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Preferred)
-        layout.addWidget(self.title_label)
-
-        self.tab_bar = QTabBar()
-        self.tab_bar.setObjectName("DockTabBar")
-        self.tab_bar.setExpanding(False)
-        self.tab_bar.setMovable(True)
-        self.tab_bar.setDrawBase(False)
-        self.tab_bar.setUsesScrollButtons(True)
-        self.tab_bar.currentChanged.connect(self._on_tab_changed)
-        self.tab_bar.tabMoved.connect(self._on_tab_moved)
-
-        # Enable drag-and-drop for tabs
-        self.tab_bar.setAcceptDrops(True)
-        self.tab_bar.installEventFilter(self)
-
-        layout.addWidget(self.tab_bar, stretch=1)
-
-        self.menu_btn = self._create_options_button()
-        layout.addWidget(self.menu_btn)
-
-        self.min_btn = self._create_icon_button("icons/minimize.svg", self.toggle_collapsed, "Minimize")
-        self.expand_btn = self._create_icon_button("icons/expand.svg", self.expand_to_fill, "Expand to fit space")
-        self.float_btn = self._create_icon_button("icons/float.svg", self._toggle_floating, "Float / Dock")
-        self.close_btn = self._create_icon_button("icons/close.svg", self._handle_close_clicked, "Close")
-
-        for btn in (self.min_btn, self.expand_btn, self.float_btn, self.close_btn):
-            layout.addWidget(btn)
-
-        self.setTitleBarWidget(title_bar)
-        title_bar.installEventFilter(self)
-        self._rebuild_options_menu()
-
-    def _init_body(self):
-        body = QFrame()
-        body.setObjectName("DockBody")
-        layout = QVBoxLayout(body)
-        layout.setContentsMargins(BASE_SPACING, BASE_SPACING, BASE_SPACING, BASE_SPACING)
-        layout.setSpacing(BASE_SPACING)
-        self.stack = QStackedWidget()
-        layout.addWidget(self.stack)
-        self.setWidget(body)
-
-    def _create_button(self, text: str, handler: Callable, tooltip: str) -> QToolButton:
-        btn = QToolButton()
-        btn.setText(text)
-        btn.setToolTip(tooltip)
-        btn.clicked.connect(handler)
-        btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn.setFixedSize(QSize(26, 22))
-        btn.setObjectName("DockButton")
-        return btn
-
-    def _create_icon_button(self, icon_name: str, handler: Callable, tooltip: str) -> QToolButton:
-        btn = QToolButton()
-        btn.setToolTip(tooltip)
-        btn.clicked.connect(handler)
-        btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn.setFixedSize(QSize(24, 24))
-        btn.setObjectName("DockIconButton")
-        btn.setIconSize(QSize(12, 12))
-        btn.setProperty("icon_name", icon_name)
-        icon_map = {
-            "icons/minimize.svg": QStyle.StandardPixmap.SP_TitleBarMinButton,
-            "icons/expand.svg": QStyle.StandardPixmap.SP_TitleBarMaxButton,
-            "icons/float.svg": QStyle.StandardPixmap.SP_TitleBarNormalButton,
-            "icons/close.svg": QStyle.StandardPixmap.SP_TitleBarCloseButton,
-        }
-        btn.setIcon(self.style().standardIcon(icon_map.get(icon_name, QStyle.StandardPixmap.SP_TitleBarMenuButton)))
-        btn.setText("")
-        return btn
-
-    def _create_options_button(self) -> QToolButton:
-        btn = QToolButton()
-        btn.setObjectName("DockIconButton")
-        btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_TitleBarMenuButton))
-        btn.setToolTip("Widget options")
-        btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn.setFixedSize(QSize(24, 24))
-        return btn
-
-    def _rebuild_options_menu(self):
-        if self._options_menu:
-            self._options_menu.deleteLater()
-        menu = QMenu(self)
-
-        # Webull-style menu structure
-        current_tab = self.current_tab_key() or "Widget"
-
-        # Add Widget submenu
-        add_action = menu.addAction("Add a Widget")
-        add_action.triggered.connect(self._handle_add_widget)
-
-        # Copy Widget
-        copy_action = menu.addAction(f"Copy {current_tab}")
-        copy_action.triggered.connect(self._handle_copy_widget)
-        copy_action.setEnabled(False)  # TODO: implement copy functionality
-
-        menu.addSeparator()
-
-        # Minimize
-        minimize_action = menu.addAction("Minimize")
-        minimize_action.triggered.connect(self.toggle_collapsed)
-
-        # Maximize
-        maximize_action = menu.addAction("Maximize")
-        maximize_action.triggered.connect(self.expand_to_fill)
-
-        # Detach/Float
-        if self.isFloating():
-            detach_action = menu.addAction("Dock")
-        else:
-            detach_action = menu.addAction("Detach")
-        detach_action.triggered.connect(self._toggle_floating)
-
-        menu.addSeparator()
-
-        # Link Group submenu
-        link_menu = menu.addMenu("Link Group")
-        none_action = link_menu.addAction("No Link")
-        none_action.setCheckable(True)
-        none_action.setChecked(self._link_group is None)
-        none_action.triggered.connect(lambda: self._set_link_group(None))
-        for group in range(1, 7):
-            action = link_menu.addAction(f"Group {group}")
-            action.setCheckable(True)
-            action.setChecked(self._link_group == group)
-            action.triggered.connect(lambda checked=False, g=group: self._set_link_group(g))
-
-        menu.addSeparator()
-
-        # Remove Widget
-        remove_action = menu.addAction(f"Remove {current_tab}")
-        remove_action.triggered.connect(self._handle_close_clicked)
-
-        self.menu_btn.setMenu(menu)
-        self._options_menu = menu
-
-    def _handle_copy_widget(self):
-        """Copy current widget to a new dock (TODO: implement)"""
-        pass
-
-    def _handle_add_widget(self):
-        if self.widget_menu_callback:
-            anchor = self.titleBarWidget() or self
-            self.widget_menu_callback(self, anchor)
-
-    def _set_link_group(self, group: int | None):
-        current_key = self.current_tab_key()
-        if current_key and self.link_callback:
-            self.link_callback(current_key, group)
-        self._link_group = group
-        self._rebuild_options_menu()
-
-    def add_tab(self, key: str, widget: QWidget, title: str):
-        if key in self.tab_widgets:
-            self.focus_tab(key)
-            return
-        widget.setParent(self.stack)
-        self.stack.addWidget(widget)
-        tab_index = self.tab_bar.addTab(title)
-        self.tab_bar.setTabData(tab_index, key)
-        self.tab_widgets[key] = widget
-        self.tab_order.insert(tab_index, key)
-        self.tab_bar.setCurrentIndex(tab_index)
-        self.tab_added.emit(key)
-        self._update_title_label()
-
-    def take_tab(self, key: str) -> QWidget | None:
-        idx = self._index_for_key(key)
-        if idx is None:
-            return None
-        return self._remove_tab_at(idx, delete=False, emit_signal=False)
-
-    def focus_tab(self, key: str):
-        idx = self._index_for_key(key)
-        if idx is None:
-            return
-        self.tab_bar.setCurrentIndex(idx)
-
-    def current_tab_key(self) -> str | None:
-        idx = self.tab_bar.currentIndex()
-        if idx < 0 or idx >= len(self.tab_order):
-            return None
-        return self.tab_order[idx]
-
-    def list_tab_keys(self) -> list[str]:
-        return list(self.tab_order)
-
-    def is_empty(self) -> bool:
-        return not self.tab_order
-
-    def _index_for_key(self, key: str) -> int | None:
-        try:
-            return self.tab_order.index(key)
-        except ValueError:
-            return None
-
-    def _on_tab_changed(self, index: int):
-        if index < 0:
-            return
-        self.stack.setCurrentIndex(index)
-        self._update_title_label()
-        key = self.current_tab_key()
-        if key:
-            self.active_tab_changed.emit(key)
-
-    def _on_tab_moved(self, from_index: int, to_index: int):
-        if from_index == to_index:
-            return
-        key = self.tab_order.pop(from_index)
-        self.tab_order.insert(to_index, key)
-        widget = self.stack.widget(from_index)
-        self.stack.removeWidget(widget)
-        self.stack.insertWidget(to_index, widget)
-
-    def _remove_tab_at(self, index: int, delete: bool = True, emit_signal: bool = True) -> QWidget | None:
-        if index < 0 or index >= len(self.tab_order):
-            return None
-        key = self.tab_order.pop(index)
-        widget = self.stack.widget(index)
-        self.stack.removeWidget(widget)
-        self.tab_bar.blockSignals(True)
-        self.tab_bar.removeTab(index)
-        self.tab_bar.blockSignals(False)
-        self.tab_widgets.pop(key, None)
-        if emit_signal:
-            self.tab_removed.emit(key)
-        if delete:
-            widget.deleteLater()
-        else:
-            widget.setParent(None)
-        if self.tab_bar.count():
-            next_index = min(index, self.tab_bar.count() - 1)
-            self.tab_bar.setCurrentIndex(next_index)
-        else:
-            QTimer.singleShot(0, self.close)
-        self._update_title_label()
-        return widget
-
-    def _handle_close_clicked(self):
-        idx = self.tab_bar.currentIndex()
-        self._remove_tab_at(idx, delete=True, emit_signal=True)
-
-    def toggle_collapsed(self):
-        self.set_collapsed(not self.collapsed)
-
-    def set_collapsed(self, collapsed: bool):
-        if self.collapsed == collapsed:
-            return
-        self.collapsed = collapsed
-        if self.widget():
-            self.widget().setVisible(not self.collapsed)
-        self.setVisible(not self.collapsed)
-        if not self.collapsed:
-            self.setMaximumHeight(16777215)
-            self.setMinimumHeight(0)
-        self.collapsed_changed.emit(self, self.collapsed)
-
-    def _toggle_floating(self):
-        self.setFloating(not self.isFloating())
-
-    def expand_to_fill(self):
-        mw = self.parent()
-        while mw and not isinstance(mw, QMainWindow):
-            mw = mw.parent()
-        if not mw:
-            return
-        mw.resizeDocks([self], [mw.width()], Qt.Orientation.Horizontal)
-        mw.resizeDocks([self], [mw.height()], Qt.Orientation.Vertical)
-
-    def closeEvent(self, event):
-        # Always allow close - emit signal so parent can clean up
-        self.closed.emit(self)
-        super().closeEvent(event)
-
-    def eventFilter(self, obj, event):
-        if obj is self.titleBarWidget():
-            # Right-click to show context menu
-            if event.type() == QEvent.Type.ContextMenu:
-                self._show_context_menu(event.globalPos())
-                return True
-            # Double-click to maximize/restore
-            if event.type() == QEvent.Type.MouseButtonDblClick and event.button() == Qt.MouseButton.LeftButton:
-                self.expand_to_fill()
-                return True
-            # Accept drag-and-drop on title bar
-            if event.type() == QEvent.Type.DragEnter:
-                if event.mimeData().hasFormat("application/x-mira-tab"):
-                    event.acceptProposedAction()
-                    self._set_drop_highlight(True)
-                    return True
-            elif event.type() == QEvent.Type.DragLeave:
-                self._set_drop_highlight(False)
-                return True
-            elif event.type() == QEvent.Type.DragMove:
-                if event.mimeData().hasFormat("application/x-mira-tab"):
-                    event.acceptProposedAction()
-                    return True
-            elif event.type() == QEvent.Type.Drop:
-                if event.mimeData().hasFormat("application/x-mira-tab"):
-                    self._set_drop_highlight(False)
-                    self._handle_tab_drop(event)
-                    return True
-            if event.type() in (QEvent.Type.MouseButtonPress,
-                                QEvent.Type.MouseButtonRelease,
-                                QEvent.Type.MouseMove):
-                QApplication.sendEvent(self, event)
-                return False
-
-        # Handle tab bar drag-and-drop
-        if obj is self.tab_bar:
-            if event.type() == QEvent.Type.MouseButtonPress:
-                if event.button() == Qt.MouseButton.LeftButton:
-                    self._drag_start_pos = event.pos()
-                    self._dragging_tab_index = self.tab_bar.tabAt(event.pos())
-            elif event.type() == QEvent.Type.MouseMove:
-                if (event.buttons() & Qt.MouseButton.LeftButton) and self._drag_start_pos:
-                    # Check if we've moved far enough to start a drag
-                    if (event.pos() - self._drag_start_pos).manhattanLength() > 10:
-                        self._start_tab_drag()
-                        return True
-            elif event.type() == QEvent.Type.DragEnter:
-                if event.mimeData().hasFormat("application/x-mira-tab"):
-                    event.acceptProposedAction()
-                    self._set_drop_highlight(True)
-                    return True
-            elif event.type() == QEvent.Type.DragLeave:
-                self._set_drop_highlight(False)
-                return True
-            elif event.type() == QEvent.Type.DragMove:
-                if event.mimeData().hasFormat("application/x-mira-tab"):
-                    event.acceptProposedAction()
-                    return True
-            elif event.type() == QEvent.Type.Drop:
-                if event.mimeData().hasFormat("application/x-mira-tab"):
-                    self._set_drop_highlight(False)
-                    self._handle_tab_drop(event)
-                    return True
-
-        return super().eventFilter(obj, event)
-
-    def _show_context_menu(self, global_pos):
-        """Show Webull-style context menu on right-click"""
-        if self._options_menu:
-            self._rebuild_options_menu()  # Refresh menu state
-            self._options_menu.exec(global_pos)
-
-    def _set_drop_highlight(self, active: bool):
-        """Toggle visual highlight for valid drop zones"""
-        if self._drop_highlight_active == active:
-            return
-
-        self._drop_highlight_active = active
-        title_bar = self.titleBarWidget()
-
-        if title_bar:
-            title_bar.setProperty("drop_active", active)
-            title_bar.style().unpolish(title_bar)
-            title_bar.style().polish(title_bar)
-
-        if hasattr(self, "tab_bar"):
-            self.tab_bar.setProperty("drop_active", active)
-            self.tab_bar.style().unpolish(self.tab_bar)
-            self.tab_bar.style().polish(self.tab_bar)
-
-    def _start_tab_drag(self):
-        """Start dragging a tab to another dock"""
-        if self._dragging_tab_index < 0 or self._dragging_tab_index >= len(self.tab_order):
-            return
-
-        drag = QDrag(self.tab_bar)
-        mime_data = QMimeData()
-
-        # Store the source dock ID and tab key
-        tab_key = self.tab_order[self._dragging_tab_index]
-        data = f"{self.dock_id}|{tab_key}"
-        mime_data.setData("application/x-mira-tab", data.encode())
-        mime_data.setText(tab_key)
-
-        drag.setMimeData(mime_data)
-
-        # Change cursor during drag
-        QApplication.setOverrideCursor(Qt.CursorShape.DragMoveCursor)
-
-        # Start the drag operation
-        result = drag.exec(Qt.DropAction.MoveAction)
-
-        # Restore cursor
-        QApplication.restoreOverrideCursor()
-
-        # Reset drag state
-        self._drag_start_pos = None
-        self._dragging_tab_index = -1
-
-    def _handle_tab_drop(self, event):
-        """Handle a tab being dropped onto this dock"""
-        mime_data = event.mimeData()
-        if not mime_data.hasFormat("application/x-mira-tab"):
-            return
-
-        data = mime_data.data("application/x-mira-tab").data().decode()
-        source_dock_id, tab_key = data.split("|", 1)
-
-        # Don't merge with self
-        if source_dock_id == self.dock_id:
-            return
-
-        # Find the main window and merge the tabs
-        main_window = self.window()
-        if hasattr(main_window, "merge_dock_tabs"):
-            main_window.merge_dock_tabs(source_dock_id, tab_key, self.dock_id)
-            event.acceptProposedAction()
-
-    def set_link_group_display(self, group: int | None):
-        self._link_group = group
-        self._update_title_label()
-        self._rebuild_options_menu()
-
-    def _update_title_label(self):
-        if not hasattr(self, "title_label"):
-            return
-        text = self.current_tab_key() or ""
-        if self._link_group:
-            text = f"{text} · #{self._link_group}"
-        display = text.upper()
-        # Hide title label when tabs exist (tabs show the names)
-        self.title_label.setVisible(self.tab_bar.count() == 0)
-        self.title_label.setText(display)
-        super().setWindowTitle(display)
-
-
-class StatPill(QFrame):
-    """Small stat widget used in the hero section."""
-
-    def __init__(self, label: str):
-        super().__init__()
-        self.setObjectName("StatPill")
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(14, 10, 14, 10)
-        layout.setSpacing(2)
-
-        self.label = QLabel(label.upper())
-        self.label.setObjectName("StatLabel")
-        self.value = QLabel("--")
-        self.value.setObjectName("StatValue")
-        self.subtext = QLabel("")
-        self.subtext.setObjectName("StatSubtext")
-
-        layout.addWidget(self.label)
-        layout.addWidget(self.value)
-        layout.addWidget(self.subtext)
-
-    def set_value(self, text: str):
-        self.value.setText(text)
-
-    def set_subtext(self, text: str):
-        self.subtext.setText(text)
-
-    def set_trend(self, trend: str | None):
-        self.setProperty("trend", trend or "")
-        self.style().unpolish(self)
-        self.style().polish(self)
-
-
-class QuoteWidget(QFrame):
-    """Headline card showcasing the active ticker and quick controls."""
-
-    def __init__(self, interval_callback):
-        super().__init__()
-        self.interval_callback = interval_callback
-        self.setObjectName("QuoteCard")
-        self.active_interval = None
-        self.current_ticker = None
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(24, 20, 24, 20)
-        layout.setSpacing(BASE_SPACING)
-
-        self.header_frame = QFrame()
-        self.header_frame.setObjectName("ModuleHeader")
-        header_layout = QHBoxLayout(self.header_frame)
-        header_layout.setContentsMargins(0, 0, 0, 0)
-        header_layout.setSpacing(12)
-
-        self.ticker_label = QLabel("--")
-        self.ticker_label.setObjectName("QuoteTicker")
-        self.subtitle_label = QLabel("Pick a ticker from the watchlist to get started.")
-        self.subtitle_label.setObjectName("QuoteSubtitle")
-
-        title_stack = QVBoxLayout()
-        title_stack.setSpacing(2)
-        title_stack.addWidget(self.ticker_label)
-        title_stack.addWidget(self.subtitle_label)
-
-        header_layout.addLayout(title_stack)
-        header_layout.addStretch()
-
-        self.status_badge = QLabel("Status: --")
-        self.status_badge.setObjectName("StatusBadge")
-        header_layout.addWidget(self.status_badge)
-
-        layout.addWidget(self.header_frame)
-
-        stats_row = QHBoxLayout()
-        stats_row.setSpacing(BASE_SPACING)
-
-        self.stat_widgets = {
-            "price": StatPill("Last Price"),
-            "change": StatPill("Session Change"),
-            "volume": StatPill("Volume"),
-            "range": StatPill("Range"),
-        }
-        for pill in self.stat_widgets.values():
-            stats_row.addWidget(pill)
-
-        layout.addLayout(stats_row)
-
-        self.brand_color = None
-        self.set_active_interval("60")
-        self.apply_brand_color(None)
-
-    def apply_brand_color(self, color: str | None):
-        self.brand_color = color
-        if color:
-            text_color = ideal_text_color(color)
-            self.status_badge.setStyleSheet(
-                f"background-color: {color}; color: {text_color}; padding: 6px 14px; border-radius: 0px;"
-            )
-            self.status_badge.setVisible(True)
-            for pill in self.stat_widgets.values():
-                pill.setStyleSheet(f"QFrame#StatPill{{ border: 1px solid {color}; }}")
-        else:
-            self.status_badge.setStyleSheet("background: transparent; border: none; padding: 0; color: inherit;")
-            self.status_badge.setVisible(False)
-            for pill in self.stat_widgets.values():
-                pill.setStyleSheet("")
-
-    def set_active_interval(self, interval: str):
-        self.active_interval = interval
-
-    def set_tab_mode(self, tabbed: bool):
-        if hasattr(self, "header_frame"):
-            self.header_frame.setVisible(not tabbed)
-
-    def show_loading(self, ticker: str):
-        symbol = (ticker or "--").upper()
-        self.current_ticker = symbol
-        self.ticker_label.setText(symbol)
-        self.subtitle_label.setText("Fetching latest snapshot...")
-        self.status_badge.setText("Loading...")
-        self.status_badge.setVisible(True)
-        for pill in self.stat_widgets.values():
-            pill.set_value("--")
-            pill.set_subtext("Loading")
-            pill.set_trend("")
-
-    def update_snapshot(self, snapshot: dict):
-        symbol = snapshot.get("symbol") or "--"
-        name = snapshot.get("name") or "Awaiting selection"
-        price = snapshot.get("price")
-        change = snapshot.get("change")
-        change_pct = snapshot.get("change_pct")
-        volume = snapshot.get("volume")
-        range_text = snapshot.get("range")
-        status = snapshot.get("status") or "Live"
-
-        self.ticker_label.setText(symbol)
-        self.subtitle_label.setText(name)
-        self.status_badge.setText(self._format_status(status))
-
-        if price is not None:
-            self.stat_widgets["price"].set_value(f"${price:,.2f}")
-        else:
-            self.stat_widgets["price"].set_value("--")
-        self.stat_widgets["price"].set_subtext(snapshot.get("time") or "")
-
-        if change is not None and change_pct is not None:
-            sign = "+" if change >= 0 else "-"
-            self.stat_widgets["change"].set_value(f"{sign}${abs(change):,.2f}")
-            self.stat_widgets["change"].set_subtext(f"{sign}{abs(change_pct):.2f}% session")
-            trend = "positive" if change >= 0 else "negative"
-            self.stat_widgets["change"].set_trend(trend)
-        else:
-            self.stat_widgets["change"].set_value("--")
-            self.stat_widgets["change"].set_subtext("No data")
-            self.stat_widgets["change"].set_trend("")
-
-        if volume is not None:
-            try:
-                vol_value = float(volume)
-                if abs(vol_value) >= 1_000_000:
-                    volume_display = f"{vol_value/1_000_000:.2f}M"
-                else:
-                    volume_display = f"{vol_value:,.0f}"
-            except (TypeError, ValueError):
-                volume_display = str(volume)
-            self.stat_widgets["volume"].set_value(volume_display)
-            self.stat_widgets["volume"].set_subtext(snapshot.get("volume_label", "Latest"))
-        else:
-            self.stat_widgets["volume"].set_value("--")
-            self.stat_widgets["volume"].set_subtext("No data")
-
-        if range_text:
-            self.stat_widgets["range"].set_value(range_text)
-            self.stat_widgets["range"].set_subtext(snapshot.get("range_label", "52W range"))
-        else:
-            self.stat_widgets["range"].set_value("--")
-            self.stat_widgets["range"].set_subtext("")
-
-    def _format_status(self, raw_status: str) -> str:
-        status = (raw_status or "").strip().lower().replace("_", " ")
-        if status.startswith("pre"):
-            return "Status: Pre-market"
-        if status.startswith("post") or status.startswith("after"):
-            return "Status: After hours"
-        if status.startswith("live") or status.startswith("regular"):
-            return "Status: Open"
-        if status.startswith("close"):
-            return "Status: Closed"
-        if not status:
-            return "Status: --"
-        return f"Status: {raw_status.title()}"
-
-
-class MarketClockWidget(QWidget):
-    """Displays market time and open/closed status with timezone selector."""
-
-    MARKETS = {
-        "New York (NYSE)": {
-            "tz": "America/New_York",
-            "open": time(9, 30),
-            "close": time(16, 0),
-            "pre": timedelta(hours=2),
-            "after": timedelta(hours=4),
-        },
-        "London (LSE)": {
-            "tz": "Europe/London",
-            "open": time(8, 0),
-            "close": time(16, 30),
-            "pre": timedelta(hours=1),
-            "after": timedelta(hours=2),
-        },
-        "Tokyo (TSE)": {
-            "tz": "Asia/Tokyo",
-            "open": time(9, 0),
-            "close": time(15, 0),
-            "pre": timedelta(hours=1),
-            "after": timedelta(hours=2),
-        },
-    }
-
-    def __init__(self):
-        super().__init__()
-        self.setObjectName("ClockCard")
-        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(12, 8, 12, 8)
-        layout.setSpacing(4)
-
-        self.selector = QComboBox()
-        self.selector.setObjectName("ClockSelector")
-        for name in self.MARKETS:
-            self.selector.addItem(name)
-        self.selector.currentIndexChanged.connect(self.update_time)
-        layout.addWidget(self.selector)
-
-        self.time_label = QLabel("--:--:--")
-        self.time_label.setObjectName("ClockTime")
-        self.status_label = QLabel("Status: --")
-        self.status_label.setObjectName("ClockStatus")
-        layout.addWidget(self.time_label)
-        layout.addWidget(self.status_label)
-
-        self.timer = QTimer(self)
-        self.timer.timeout.connect(self.update_time)
-        self.timer.start(1_000)
-        self.update_time()
-
-    def update_time(self):
-        market = self.MARKETS[self.selector.currentText()]
-        tz = ZoneInfo(market["tz"])
-        now = datetime.now(tz)
-        self.time_label.setText(now.strftime("%H:%M:%S"))
-        status = self._determine_status(now, market)
-        self.status_label.setText(f"{status} - {now.strftime('%b %d')}")
-
-    def _determine_status(self, now: datetime, market: dict) -> str:
-        open_dt = now.replace(hour=market["open"].hour, minute=market["open"].minute,
-                              second=0, microsecond=0)
-        close_dt = now.replace(hour=market["close"].hour, minute=market["close"].minute,
-                               second=0, microsecond=0)
-        pre_start = open_dt - market["pre"]
-        after_end = close_dt + market["after"]
-
-        if pre_start <= now < open_dt:
-            return "Pre-market"
-        if open_dt <= now <= close_dt:
-            return "Open"
-        if close_dt < now <= after_end:
-            return "After hours"
-        return "Closed"
-
-class ChartWidget(QWidget):
-    """Standalone chart widget (TradingView embed)."""
-    
-    def __init__(self, theme_provider):
-        super().__init__()
-        self.theme_provider = theme_provider
-        self.current_ticker = None
-        self.default_interval = "60"  # TradingView interval codes (60 = 1h)
-        self.current_interval = self.default_interval
-        self.last_chart_signature: tuple[str, str, str] | None = None
-        self.init_ui()
-    
-    def init_ui(self):
-        layout = QVBoxLayout(self)
-        layout.setSpacing(BASE_SPACING)
-        layout.setContentsMargins(0, 0, 0, 0)
-        
-        self.chart_view = QWebEngineView()
-        self.chart_view.settings().setAttribute(
-            QWebEngineSettings.WebAttribute.LocalContentCanAccessRemoteUrls, True
-        )
-        self.chart_view.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        self.chart_view.setMinimumSize(QSize(420, 320))
-        layout.addWidget(self.chart_view)
-    
-    def load_ticker(self, ticker: str):
-        """Load and display ticker data."""
-        self.current_ticker = ticker
-        self.update_chart(ticker)
-    
-    def update_chart(self, ticker: str, interval: str | None = None):
-        """Update chart using TradingView's official widget for a native experience."""
-        interval = interval or self.current_interval or self.default_interval
-        self.current_interval = interval
-        theme = self.theme_provider()
-        signature = (ticker.upper(), interval, theme["chart_theme"])
-        if signature == self.last_chart_signature:
-            return
-        self.last_chart_signature = signature
-        html = self.create_tradingview_widget_html(ticker, interval)
-        self.chart_view.setHtml(html)
-    
-    def refresh_theme(self):
-        self.last_chart_signature = None
-        if self.current_ticker:
-            self.update_chart(self.current_ticker, self.current_interval)
-    
-    def create_tradingview_widget_html(self, ticker: str, interval: str) -> str:
-        """Embed TradingView Advanced Chart widget."""
-        theme = self.theme_provider()
-        safe_ticker = ticker.replace(" ", "")
-        background = theme["chart_bg"]
-        toolbar_bg = theme["chart_toolbar"]
-        chart_theme = theme["chart_theme"]
-        html = f"""
-<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="utf-8">
-    <title>{safe_ticker} Chart</title>
-    <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
-    <style>
-        html, body {{
-            margin: 0;
-            padding: 0;
-            width: 100%;
-            height: 100%;
-            background: {background};
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-        }}
-        #tv_chart {{
-            width: 100%;
-            height: 100%;
-            min-height: 620px;
-        }}
-    </style>
-</head>
-<body>
-    <div id="tv_chart"></div>
-    <script type="text/javascript">
-        function initTradingView() {{
-            if (typeof TradingView === 'undefined' || !TradingView.widget) {{
-                setTimeout(initTradingView, 100);
-                return;
-            }}
-            new TradingView.widget({{
-                container_id: "tv_chart",
-                autosize: true,
-                symbol: "{safe_ticker}",
-                interval: "{interval}",
-                timezone: "Etc/UTC",
-                theme: "{chart_theme}",
-                style: "1",
-                backgroundColor: "{background}",
-                toolbar_bg: "{toolbar_bg}",
-                hide_side_toolbar: false,
-                hide_top_toolbar: false,
-                allow_symbol_change: true,
-                save_image: false,
-                locale: "en",
-                studies: [],
-                enable_publishing: false,
-            }});
-        }}
-        initTradingView();
-    </script>
-</body>
-</html>
-        """
-        return html
-    
-
-class FundamentalsWidget(QWidget):
-    """Standalone fundamentals table widget."""
-
-    def __init__(self, data_provider: TickerDataProvider):
-        super().__init__()
-        self.data_provider = data_provider
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(BASE_SPACING, BASE_SPACING, BASE_SPACING, BASE_SPACING)
-        layout.setSpacing(BASE_SPACING)
-
-        self.header_frame = QFrame()
-        header_layout = QVBoxLayout(self.header_frame)
-        header_layout.setContentsMargins(0, 0, 0, 0)
-        header_layout.setSpacing(2)
-        title = QLabel("Fundamentals")
-        title.setObjectName("SectionTitle")
-        subtitle = QLabel("Key valuation metrics and ratios.")
-        subtitle.setObjectName("SectionHint")
-        header_layout.addWidget(title)
-        header_layout.addWidget(subtitle)
-        layout.addWidget(self.header_frame)
-
-        self.table = QTableWidget()
-        self.table.setColumnCount(2)
-        self.table.setHorizontalHeaderLabels(["Metric", "Value"])
-        self.table.horizontalHeader().setStretchLastSection(True)
-        self.table.verticalHeader().setVisible(False)
-        self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        layout.addWidget(self.table)
-
-        self._pending_ticker: str | None = None
-        self._workers: list[SnapshotWorker] = []
-
-    def load_ticker(self, ticker: str):
-        ticker = (ticker or "").strip().upper()
-        if not ticker:
-            return
-        self._pending_ticker = ticker
-        self._show_loading_state()
-        self._run_async_task(lambda t=ticker: self._fetch_fundamentals(t), self._apply_fundamentals_payload)
-
-    def _run_async_task(self, fetcher: Callable[[], dict], handler: Callable[[dict], None]):
-        worker = SnapshotWorker(fetcher)
-        worker.result_ready.connect(handler)
-        worker.finished.connect(lambda w=worker: self._finalize_worker(w))
-        self._workers.append(worker)
-        worker.start()
-
-    def _finalize_worker(self, worker: SnapshotWorker):
-        if worker in self._workers:
-            self._workers.remove(worker)
-        worker.deleteLater()
-
-    def _show_loading_state(self):
-        self.table.setRowCount(1)
-        self.table.setItem(0, 0, QTableWidgetItem("Loading"))
-        self.table.setItem(0, 1, QTableWidgetItem("Fetching fundamentals..."))
-
-    def _fetch_fundamentals(self, ticker: str) -> dict:
-        if not self.data_provider:
-            return {"ticker": ticker, "error": "Data provider unavailable"}
-        return self.data_provider.fetch_fundamentals_payload(ticker)
-
-    def _apply_fundamentals_payload(self, payload: dict):
-        ticker = payload.get("ticker")
-        if self._pending_ticker and ticker != self._pending_ticker:
-            return
-        if payload.get("error"):
-            self._display_error(payload["error"])
-            return
-        metrics = payload.get("metrics", [])
-        self.table.setRowCount(len(metrics))
-        for row, (metric, value) in enumerate(metrics):
-            self.table.setItem(row, 0, QTableWidgetItem(str(metric)))
-            self.table.setItem(row, 1, QTableWidgetItem(str(value)))
-
-    def _display_error(self, message: str):
-        self.table.setRowCount(1)
-        self.table.setItem(0, 0, QTableWidgetItem("Error"))
-        self.table.setItem(0, 1, QTableWidgetItem(message))
-    
-    def set_tab_mode(self, tabbed: bool):
-        if hasattr(self, "header_frame"):
-            self.header_frame.setVisible(not tabbed)
-
-
-class NewsWidget(QWidget):
-    """Standalone news list widget."""
-
-    def __init__(self, data_provider: TickerDataProvider):
-        super().__init__()
-        self.data_provider = data_provider
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(BASE_SPACING, BASE_SPACING, BASE_SPACING, BASE_SPACING)
-        layout.setSpacing(BASE_SPACING)
-
-        self.header_frame = QFrame()
-        header_layout = QVBoxLayout(self.header_frame)
-        header_layout.setContentsMargins(0, 0, 0, 0)
-        header_layout.setSpacing(2)
-        title = QLabel("Market News")
-        title.setObjectName("SectionTitle")
-        subtitle = QLabel("Latest headlines for the active symbol.")
-        subtitle.setObjectName("SectionHint")
-        header_layout.addWidget(title)
-        header_layout.addWidget(subtitle)
-        layout.addWidget(self.header_frame)
-
-        self.news_list = QListWidget()
-        self.news_list.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        layout.addWidget(self.news_list)
-
-        self._pending_ticker: str | None = None
-        self._workers: list[SnapshotWorker] = []
-
-    def load_ticker(self, ticker: str):
-        ticker = (ticker or "").strip().upper()
-        if not ticker:
-            return
-        self._pending_ticker = ticker
-        self._show_loading_state()
-        self._run_async_task(lambda t=ticker: self._fetch_news(t), self._apply_news_payload)
-
-    def _run_async_task(self, fetcher: Callable[[], dict], handler: Callable[[dict], None]):
-        worker = SnapshotWorker(fetcher)
-        worker.result_ready.connect(handler)
-        worker.finished.connect(lambda w=worker: self._finalize_worker(w))
-        self._workers.append(worker)
-        worker.start()
-
-    def _finalize_worker(self, worker: SnapshotWorker):
-        if worker in self._workers:
-            self._workers.remove(worker)
-        worker.deleteLater()
-
-    def _show_loading_state(self):
-        self.news_list.clear()
-        self.news_list.addItem("Loading headlines...")
-
-    def _fetch_news(self, ticker: str) -> dict:
-        if not self.data_provider:
-            return {"ticker": ticker, "error": "Data provider unavailable"}
-        return self.data_provider.fetch_news_payload(ticker)
-
-    def _apply_news_payload(self, payload: dict):
-        ticker = payload.get("ticker")
-        if self._pending_ticker and ticker != self._pending_ticker:
-            return
-        if payload.get("error"):
-            self._display_error(payload["error"])
-            return
-        entries = payload.get("items", [])
-        self.news_list.clear()
-        if not entries:
-            self.news_list.addItem("No recent news.")
-            return
-        for entry in entries:
-            self.news_list.addItem(entry)
-
-    def _display_error(self, message: str):
-        self.news_list.clear()
-        self.news_list.addItem(f"Error loading news: {message}")
-
-    def set_tab_mode(self, tabbed: bool):
-        if hasattr(self, "header_frame"):
-            self.header_frame.setVisible(not tabbed)
-
-
-class ChatbotWidget(QWidget):
-    """Context-aware chatbot panel."""
-    
-    def __init__(self, context_callback):
-        super().__init__()
-        self.context_callback = context_callback  # Function to get current context
-        self.init_ui()
-    
-    def init_ui(self):
-        layout = QVBoxLayout(self)
-        layout.setSpacing(BASE_SPACING)
-        layout.setContentsMargins(BASE_SPACING, BASE_SPACING, BASE_SPACING, BASE_SPACING)
-
-        self.header_frame = QFrame()
-        header_layout = QVBoxLayout(self.header_frame)
-        header_layout.setContentsMargins(0, 0, 0, 0)
-        header_layout.setSpacing(2)
-        title = QLabel("AI Copilot")
-        title.setObjectName("SectionTitle")
-        subtitle = QLabel("Context-aware assistant that knows your current view.")
-        subtitle.setObjectName("SectionHint")
-        header_layout.addWidget(title)
-        header_layout.addWidget(subtitle)
-        layout.addWidget(self.header_frame)
-        
-        # Chat display
-        self.chat_display = QTextEdit()
-        self.chat_display.setReadOnly(True)
-        self.chat_display.setFont(QFont("Courier", 10))
-        self.chat_display.setObjectName("ChatDisplay")
-        self.chat_display.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        layout.addWidget(self.chat_display)
-        
-        # Input
-        input_layout = QHBoxLayout()
-        self.input_field = QLineEdit()
-        self.input_field.setPlaceholderText("Ask about the chart, strategy, or ticker...")
-        self.input_field.returnPressed.connect(self.send_message)
-        self.send_btn = QPushButton("Send")
-        self.send_btn.clicked.connect(self.send_message)
-        self.input_field.setMinimumHeight(TOUCH_TARGET)
-        self.send_btn.setMinimumHeight(TOUCH_TARGET)
-        self.input_field.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self.send_btn.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-        input_layout.addWidget(self.input_field)
-        input_layout.addWidget(self.send_btn)
-        layout.addLayout(input_layout)
-        
-        self.setLayout(layout)
-        self.add_bot_message("Hi! I'm your trading assistant. Ask me about charts, signals, or strategies!")
-    
-    def set_tab_mode(self, tabbed: bool):
-        if hasattr(self, "header_frame"):
-            self.header_frame.setVisible(not tabbed)
-    
-    def send_message(self):
-        """Handle user message and generate response."""
-        user_msg = self.input_field.text().strip()
-        if not user_msg:
-            return
-        
-        self.add_user_message(user_msg)
-        self.input_field.clear()
-        
-        # Get context
-        context = self.context_callback()
-        
-        # Generate response
-        response = self.generate_response(user_msg, context)
-        self.add_bot_message(response)
-    
-    def add_user_message(self, msg: str):
-        """Add user message to chat."""
-        self.chat_display.append(f"<b>You:</b> {msg}")
-    
-    def add_bot_message(self, msg: str):
-        """Add bot message to chat."""
-        self.chat_display.append(f"<b>Assistant:</b> {msg}")
-    
-    def generate_response(self, user_msg: str, context: dict) -> str:
-        """Generate chatbot response based on user message and context."""
-        msg_lower = user_msg.lower()
-        ticker = context.get("ticker", "N/A")
-        
-        # Signal explanations
-        if "false breakout" in msg_lower or "false" in msg_lower:
-            return f"""A **false breakout** occurs when price breaks above the consolidation high but on **low volume** (< 25th percentile).
-
-This suggests:
-- Liquidity was taken (stops above consolidation)
-- Lack of follow-through (low volume)
-- Likely to reverse back into consolidation
-
-For {ticker}, this could be a **short opportunity** if confirmed."""
-        
-        if "true breakout" in msg_lower or "breakout" in msg_lower:
-            return f"""A **true breakout** happens when price breaks above consolidation high with **high volume** (>= 75th percentile).
-
-This indicates:
-- Strong buying pressure
-- Likely continuation move
-- Good entry for long positions
-
-The strategy enters long on true breakouts with a stop at consolidation low and 2R target."""
-        
-        if "consolidation" in msg_lower:
-            return f"""**Consolidation** is when price trades in a tight range (<= 2% of mean price) over the lookback period ({strategy.LOOKBACK_HOURS} hours).
-
-For {ticker}, consolidation bands show:
-- **Green line**: Consolidation high (resistance)
-- **Red line**: Consolidation low (support)
-
-When price breaks above the green line with volume, it's a breakout signal."""
-        
-        if "strategy" in msg_lower or "how does" in msg_lower:
-            return f"""**Consolidation + Breakout + Volume Strategy**
-
-1. **Identify Consolidation**: Price in tight range (<= 2% over {strategy.LOOKBACK_HOURS} hours)
-2. **Wait for Breakout**: Price breaks above consolidation high
-3. **Check Volume**: 
-   - High volume (>= 75th percentile) = True breakout (long)
-   - Low volume (< 25th percentile) = False breakout (short opportunity)
-4. **Enter**: Stop at consolidation low, target at 2R
-
-Currently analyzing: {ticker}"""
-        
-        if "backtest" in msg_lower:
-            return f"""I can run a backtest! The strategy uses:
-- Risk: {strategy.RISK_FRACTION*100}% per trade
-- R:R: {strategy.RR_TARGET}:1
-- Stop: Consolidation low
-- Target: Entry + {strategy.RR_TARGET}R
-
-Would you like me to backtest {ticker} or the full universe?"""
-        
-        if "volume" in msg_lower:
-            return f"""Volume analysis uses **dynamic thresholds** based on each stock's own distribution:
-- **High volume**: >= 75th percentile (green bars)
-- **Low volume**: < 25th percentile (red bars)
-- **Normal**: Between thresholds (gray bars)
-
-This adapts to each stock's volume profile - a high-volume stock like TSLA has different thresholds than a low-volume stock."""
-        
-        # Enhanced context-aware responses
-        if ticker != "N/A":
-            if "what" in msg_lower and ("signal" in msg_lower or "showing" in msg_lower):
-                # Get current signal status with more detail
-                try:
-                    df = strategy.fetch_hourly_data(ticker, period="30d")
-                    if not df.empty:
-                        sigs = strategy.breakout_volume_signals(df)
-                        last_sig = sigs.iloc[-1]
-                        current_price = df["Close"].iloc[-1]
-                        cons_high = float(last_sig["cons_high_prev"]) if not np.isnan(last_sig["cons_high_prev"]) else None
-                        cons_low = float(last_sig["cons_low_prev"]) if not np.isnan(last_sig["cons_low_prev"]) else None
-                        
-                        if bool(last_sig["false_breakout"]):
-                            return f"""**{ticker} - FALSE BREAKOUT Signal**
-
-Current Price: ${current_price:.2f}
-Consolidation Range: ${cons_low:.2f} - ${cons_high:.2f}
-
-**Analysis:**
-- Price broke above consolidation high but on LOW volume (< 25th percentile)
-- This suggests liquidity was taken but lacks follow-through
-- **Potential short opportunity** if price rejects and returns below ${cons_high:.2f}
-
-**Risk Management:**
-- Stop: Above recent high
-- Target: Back to consolidation low ${cons_low:.2f}"""
-                        
-                        elif bool(last_sig["signal"]):
-                            return f"""**{ticker} - TRUE BREAKOUT Signal**
-
-Current Price: ${current_price:.2f}
-Consolidation Range: ${cons_low:.2f} - ${cons_high:.2f}
-
-**Analysis:**
-- Price broke above consolidation high with HIGH volume (>= 75th percentile)
-- Strong buying pressure indicates continuation
-- **Long entry opportunity**
-
-**Trade Setup:**
-- Entry: Current price or pullback to ${cons_high:.2f}
-- Stop: ${cons_low:.2f} (consolidation low)
-- Target: ${current_price + (current_price - cons_low) * strategy.RR_TARGET:.2f} (2R target)
-- Risk/Reward: 1:{strategy.RR_TARGET}"""
-                        
-                        elif bool(last_sig["cons_ok"]):
-                            breakout_level = float(last_sig["breakout_level"])
-                            dist_pct = ((breakout_level - current_price) / current_price) * 100
-                            return f"""**{ticker} - CONSOLIDATION SETUP**
-
-Current Price: ${current_price:.2f}
-Consolidation Range: ${cons_low:.2f} - ${cons_high:.2f}
-Breakout Level: ${breakout_level:.2f}
-Distance to Breakout: {dist_pct:.2f}%
-
-**Status:** Waiting for breakout
-**Action:** Monitor for volume confirmation when price approaches ${breakout_level:.2f}"""
-                        else:
-                            return f"{ticker} is not showing a setup currently. No consolidation detected in the last {strategy.LOOKBACK_HOURS} hours."
-                except Exception as e:
-                    return f"Error analyzing {ticker}: {str(e)}"
-        
-        # Default response
-        return f"""I understand you're asking about: "{user_msg}"
-
-For {ticker}, I can help with:
-- Explaining signals (true/false breakouts)
-- Strategy mechanics
-- Risk/reward analysis
-- Backtesting
-
-Try asking: "What signal is {ticker} showing?" or "Explain false breakouts" """
-
-
-class ScreenerWidget(QWidget):
-    """Left sidebar: Stock screener and search."""
-    
-    def __init__(self, ticker_callback):
-        super().__init__()
-        self.ticker_callback = ticker_callback  # Callback when ticker selected
-        self.init_ui()
-    
-    def init_ui(self):
-        layout = QVBoxLayout(self)
-        layout.setSpacing(BASE_SPACING)
-        layout.setContentsMargins(BASE_SPACING, BASE_SPACING, BASE_SPACING, BASE_SPACING)
-
-        self.header_frame = QFrame()
-        header_layout = QVBoxLayout(self.header_frame)
-        header_layout.setContentsMargins(0, 0, 0, 0)
-        header_layout.setSpacing(2)
-        title = QLabel("Market Scanner")
-        title.setObjectName("SectionTitle")
-        subtitle = QLabel("Search, filter, and monitor breakout-ready names.")
-        subtitle.setObjectName("SectionHint")
-        header_layout.addWidget(title)
-        header_layout.addWidget(subtitle)
-        layout.addWidget(self.header_frame)
-        
-        # Search box
-        search_layout = QHBoxLayout()
-        search_layout.setSpacing(8)
-        self.search_input = QLineEdit()
-        self.search_input.setPlaceholderText("Search ticker...")
-        self.search_input.returnPressed.connect(self.search_ticker)
-        self.search_btn = QPushButton("Search")
-        self.search_btn.clicked.connect(self.search_ticker)
-        self.search_btn.setMinimumHeight(TOUCH_TARGET)
-        self.search_input.setMinimumHeight(TOUCH_TARGET)
-        self.search_input.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self.search_btn.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-        search_layout.addWidget(self.search_input)
-        search_layout.addWidget(self.search_btn)
-        layout.addLayout(search_layout)
-        
-        # Quick filters
-        filter_row = QHBoxLayout()
-        filter_row.setSpacing(8)
-        filters = [
-            ("Breakouts", "breakout"),
-            ("False breaks", "false"),
-            ("Tight ranges", "consolidation"),
-            ("Volume spikes", "volume"),
-        ]
-        for label, key in filters:
-            btn = QPushButton(label)
-            btn.setObjectName("SegmentButton")
-            btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-            btn.clicked.connect(lambda checked, l=label, k=key: self.apply_filter(l, k))
-            filter_row.addWidget(btn)
-        layout.addLayout(filter_row)
-
-        self.filter_summary = QLabel("Focus: All setups")
-        self.filter_summary.setObjectName("SectionHint")
-        layout.addWidget(self.filter_summary)
-        
-        # Quick scan button
-        scan_btn = QPushButton("Scan Universe")
-        scan_btn.clicked.connect(self.scan_universe)
-        scan_btn.setMinimumHeight(TOUCH_TARGET)
-        scan_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        layout.addWidget(scan_btn)
-        
-        # Ticker list
-        self.ticker_list = QListWidget()
-        self.ticker_list.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        self.ticker_list.itemClicked.connect(self.on_ticker_selected)
-        watchlist_label = QLabel("Watchlist")
-        watchlist_label.setObjectName("SectionTitle")
-        layout.addWidget(watchlist_label)
-        layout.addWidget(self.ticker_list)
-        
-        # Load default tickers
-        for ticker in strategy.TICKERS:
-            self.ticker_list.addItem(ticker)
-        
-        self.setLayout(layout)
-        self.active_filter = "all"
-    
-    def search_ticker(self):
-        """Search and add ticker."""
-        ticker = self.search_input.text().strip().upper()
-        if ticker and ticker not in [self.ticker_list.item(i).text() for i in range(self.ticker_list.count())]:
-            self.ticker_list.addItem(ticker)
-            self.ticker_list.setCurrentRow(self.ticker_list.count() - 1)
-            self.ticker_callback(ticker)
-        self.search_input.clear()
-    
-    def scan_universe(self):
-        """Run scanner on universe."""
-        # This would trigger scanner - for now just show message
-        self.ticker_list.addItem("Scanning...")
-        self.filter_summary.setText("Focus: Running scan...")
-    
-    def apply_filter(self, label: str, key: str):
-        """Update selected filter badge."""
-        self.active_filter = key
-        self.filter_summary.setText(f"Focus: {label}")
-    
-    def on_ticker_selected(self, item):
-        """Handle ticker selection."""
-        text = item.text().strip()
-        if text.lower().startswith("scanning"):
-            return
-        self.ticker_callback(text)
-    
-    def set_tab_mode(self, tabbed: bool):
-        if hasattr(self, "header_frame"):
-            self.header_frame.setVisible(not tabbed)
+from PyQt6.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QLabel, QDockWidget, QSizePolicy, QFrame, QToolButton, QMenu,
+    QToolBar, QTabWidget, QStyle
+)
+from PyQt6.QtCore import Qt, QTimer, QSize
+from PyQt6.QtGui import QAction, QIcon, QCursor
+
+# Import our custom modules
+from core.themes import (
+    THEMES, BASE_RADIUS, BASE_SPACING, TOUCH_TARGET, BRAND_COLORS,
+    ticker_hash_color, soften_color, mix_colors
+)
+from core.data_provider import TickerDataProvider, SnapshotWorker
+from docking.workspace_dock import WorkspaceDock
+from layout.workspace_manager import WorkspaceManager
+from widgets.quotes import QuoteWidget
+from widgets.market_clock import MarketClockWidget
+from widgets.chart import ChartWidget
+from widgets.screener import ScreenerWidget
+from widgets.fundamentals import FundamentalsWidget
+from widgets.news import NewsWidget
+from widgets.chatbot import ChatbotWidget
+
+# Import configuration
+from core.config import DEFAULT_TICKERS
 
 
 class TradingTerminal(QMainWindow):
@@ -1733,6 +73,11 @@ class TradingTerminal(QMainWindow):
         self.pending_widget_target_dock: WorkspaceDock | None = None
         self.data_provider = TickerDataProvider()
 
+        # Workspace management - save/load layouts
+        # Directory will be user-specific once authentication is added
+        app_data_dir = Path.home() / ".mira_terminal"
+        self.workspace_manager = WorkspaceManager(app_data_dir)
+
         # Auto-refresh timer for live quotes (every 15 seconds)
         self.auto_refresh_timer = QTimer(self)
         self.auto_refresh_timer.timeout.connect(self.auto_refresh_quotes)
@@ -1749,14 +94,22 @@ class TradingTerminal(QMainWindow):
         self.setDockOptions(
             QMainWindow.DockOption.AllowNestedDocks |
             QMainWindow.DockOption.AnimatedDocks |
-            QMainWindow.DockOption.GroupedDragging
+            QMainWindow.DockOption.GroupedDragging |
+            QMainWindow.DockOption.AllowTabbedDocks
         )
         self.setTabPosition(Qt.DockWidgetArea.AllDockWidgetAreas, QTabWidget.TabPosition.North)
-        
+
+        # Use a minimal central widget to avoid blocking dock operations
+        # Set it to a very small size so docks can occupy most of the space
         central = QWidget()
         central.setObjectName("Workspace")
+        central.setMaximumSize(1, 1)  # Minimal size
+        central.setVisible(False)  # Hide it entirely - docks will fill the space
         self.setCentralWidget(central)
-        
+
+        # Enable drag-and-drop for tabs onto the main window (empty space drops)
+        self.setAcceptDrops(True)
+
         header = self.create_header()
         self.setMenuWidget(header)
         self.setup_stow_bar()
@@ -1773,8 +126,8 @@ class TradingTerminal(QMainWindow):
         self.create_widget_menu()
         self.create_default_layout()
 
-        if strategy.TICKERS:
-            self.on_ticker_selected(strategy.TICKERS[0])
+        if DEFAULT_TICKERS:
+            self.on_ticker_selected(DEFAULT_TICKERS[0])
 
     def create_widget_menu(self):
         """Create add-widget menu for re-spawning docks."""
@@ -1785,23 +138,146 @@ class TradingTerminal(QMainWindow):
         if self.widget_button:
             self.widget_button.setMenu(self.widget_menu)
             self.widget_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-    
+
+    def create_workspace_menu(self):
+        """Create workspace management menu with presets, save, and load options."""
+        self.workspace_menu = QMenu(self)
+
+        # Section: Load Preset Layouts
+        presets_menu = self.workspace_menu.addMenu("Load Preset")
+        for preset_name in WorkspaceManager.get_default_presets().keys():
+            action = presets_menu.addAction(preset_name)
+            action.triggered.connect(lambda checked=False, name=preset_name: self.load_preset_workspace(name))
+
+        self.workspace_menu.addSeparator()
+
+        # Section: Saved Workspaces
+        self.saved_workspaces_menu = self.workspace_menu.addMenu("My Workspaces")
+        self.refresh_saved_workspaces_menu()
+
+        self.workspace_menu.addSeparator()
+
+        # Save Current Workspace
+        save_action = self.workspace_menu.addAction("Save Current Layout...")
+        save_action.triggered.connect(self.save_current_workspace)
+
+        # Set menu on button
+        if hasattr(self, 'workspace_button'):
+            self.workspace_button.setMenu(self.workspace_menu)
+
+    def refresh_saved_workspaces_menu(self):
+        """Refresh the list of saved workspaces in the menu."""
+        if not hasattr(self, 'saved_workspaces_menu'):
+            return
+
+        self.saved_workspaces_menu.clear()
+
+        saved_workspaces = self.workspace_manager.list_workspaces()
+        if not saved_workspaces:
+            no_workspaces_action = self.saved_workspaces_menu.addAction("(No saved workspaces)")
+            no_workspaces_action.setEnabled(False)
+        else:
+            for workspace_name in saved_workspaces:
+                # Skip preset names to avoid confusion
+                if workspace_name in WorkspaceManager.get_default_presets().keys():
+                    continue
+
+                action = self.saved_workspaces_menu.addAction(workspace_name)
+                action.triggered.connect(lambda checked=False, name=workspace_name: self.load_saved_workspace(name))
+
+    def load_preset_workspace(self, preset_name: str):
+        """Load a preset workspace layout."""
+        # Safely close all existing docks (deferred to avoid crashes during drag operations)
+        docks_to_close = list(self.dock_by_id.values())
+        self.dock_widgets.clear()
+        self.dock_by_id.clear()
+
+        # Close docks after clearing references (prevents accessing deleted objects)
+        for dock in docks_to_close:
+            dock.blockSignals(True)  # Prevent signals during cleanup
+            dock.deleteLater()  # Safe deferred deletion
+
+        # Get and apply the preset layout
+        presets = WorkspaceManager.get_default_presets()
+        if preset_name in presets:
+            layout_func = presets[preset_name]
+            layout_func(self)
+            self.workspace_manager.current_workspace_name = f"Preset: {preset_name}"
+
+            # Force style refresh for all docks to show tab titles properly
+            QTimer.singleShot(0, self._refresh_all_dock_styles)
+
+    def load_saved_workspace(self, workspace_name: str):
+        """Load a user-saved workspace."""
+        success = self.workspace_manager.load_workspace(workspace_name, self)
+        if success:
+            # Force style refresh for all docks to show tab titles properly
+            QTimer.singleShot(0, self._refresh_all_dock_styles)
+        else:
+            print(f"Failed to load workspace: {workspace_name}")
+
+    def _refresh_all_dock_styles(self):
+        """Force Qt to refresh styling on all dock widgets and their components."""
+        for dock in self.dock_by_id.values():
+            # Refresh the dock widget itself
+            dock.style().unpolish(dock)
+            dock.style().polish(dock)
+
+            # Refresh the title bar
+            if dock.titleBarWidget():
+                dock.titleBarWidget().style().unpolish(dock.titleBarWidget())
+                dock.titleBarWidget().style().polish(dock.titleBarWidget())
+
+            # Refresh the tab bar (critical for showing tab titles)
+            if hasattr(dock, 'tab_bar'):
+                dock.tab_bar.style().unpolish(dock.tab_bar)
+                dock.tab_bar.style().polish(dock.tab_bar)
+                # Force tab bar to update its size
+                dock.tab_bar.updateGeometry()
+
+    def save_current_workspace(self):
+        """Prompt user for workspace name and save current layout."""
+        from PyQt6.QtWidgets import QInputDialog
+
+        # Get workspace name from user
+        name, ok = QInputDialog.getText(
+            self,
+            "Save Workspace",
+            "Enter a name for this workspace layout:",
+            text=self.workspace_manager.current_workspace_name or ""
+        )
+
+        if ok and name.strip():
+            success = self.workspace_manager.save_workspace(name.strip(), self)
+            if success:
+                print(f"Workspace '{name}' saved successfully")
+                self.refresh_saved_workspaces_menu()
+            else:
+                print(f"Failed to save workspace '{name}'")
+
     def create_default_layout(self):
-        # Create primary docks
-        quotes = self.ensure_widget("Quotes", Qt.DockWidgetArea.TopDockWidgetArea)
+        """Create a simple, flexible starting layout"""
+
+        # Start with just the main widgets in simple areas
+        # Let Qt handle the initial positioning, then customize
+
+        # Main chart - center focus
         chart = self.ensure_widget("Chart", Qt.DockWidgetArea.RightDockWidgetArea)
+
+        # Screener - left side for stock selection
         screener = self.ensure_widget("Screener", Qt.DockWidgetArea.LeftDockWidgetArea)
+
+        # Quotes - minimal, can be top or tabbed
+        quotes = self.ensure_widget("Quotes", Qt.DockWidgetArea.TopDockWidgetArea)
+
+        # Fundamentals - bottom area
         fundamentals = self.ensure_widget("Fundamentals", Qt.DockWidgetArea.BottomDockWidgetArea)
 
-        # Arrange primary layout
-        if chart and fundamentals:
-            self.splitDockWidget(chart, fundamentals, Qt.Orientation.Vertical)
-        if quotes and chart:
-            self.splitDockWidget(quotes, chart, Qt.Orientation.Vertical)
+        # Simple horizontal split: Screener | Chart
         if screener and chart:
             self.splitDockWidget(screener, chart, Qt.Orientation.Horizontal)
-        
-        # Add secondary widgets as tabs
+
+        # Add secondary widgets as tabs (cleaner starting point)
         if fundamentals:
             self.add_widget_tab(fundamentals, "News")
         if chart:
@@ -1850,6 +326,194 @@ class TradingTerminal(QMainWindow):
 
         # Refresh link group display
         target_dock.set_link_group_display(self.widget_link_groups.get(tab_key))
+
+    def handle_zone_drop_on_dock(self, source_dock_id: str, tab_key: str, target_dock_id: str, zone: str):
+        """Handle tab dropped on a specific zone of a dock - split or merge"""
+        try:
+            source_dock = self.dock_by_id.get(source_dock_id)
+            target_dock = self.dock_by_id.get(target_dock_id)
+
+            # Safety checks
+            if not source_dock or not target_dock:
+                print(f"Error: Invalid docks - source: {source_dock}, target: {target_dock}")
+                return
+
+            if source_dock.isHidden() or target_dock.isHidden():
+                print(f"Error: Hidden dock detected")
+                return
+
+            # Take the tab from source dock
+            widget = source_dock.take_tab(tab_key)
+            if not widget:
+                print(f"Error: Could not take tab '{tab_key}' from source dock")
+                return
+
+            if zone == 'merge':
+                # Center area - merge into target dock as a new tab
+                target_dock.add_tab(tab_key, widget, tab_key)
+                self.dock_widgets[tab_key] = target_dock
+            elif zone in ['left', 'right', 'top', 'bottom']:
+                # Edge zone - split the target dock and create new dock at that position
+                # Create new dock with the tab
+                new_dock_id = f"dock_{len(self.dock_by_id)}"
+                new_dock = WorkspaceDock(
+                    new_dock_id, tab_key, widget, self,
+                    link_callback=self.update_widget_link_group,
+                    widget_menu_callback=self.show_widget_menu_at
+                )
+                new_dock.closed.connect(lambda d=new_dock: self.on_dock_closed(d))
+                new_dock.collapsed_changed.connect(lambda d, c: self.on_dock_collapsed(d, c))
+                new_dock.tab_removed.connect(lambda k, d=new_dock: self.on_dock_tab_removed(d, k))
+                new_dock.active_tab_changed.connect(lambda k: self.on_active_tab_changed(k))
+
+                # Determine split orientation based on zone
+                if zone in ['left', 'right']:
+                    orientation = Qt.Orientation.Horizontal
+                else:  # 'top' or 'bottom'
+                    orientation = Qt.Orientation.Vertical
+
+                # Add the new dock next to the target
+                if zone == 'left' or zone == 'top':
+                    # Add new dock before target
+                    self.splitDockWidget(target_dock, new_dock, orientation)
+                else:  # 'right' or 'bottom'
+                    # Add new dock after target
+                    self.splitDockWidget(new_dock, target_dock, orientation)
+
+                # Register the new dock
+                self.dock_by_id[new_dock_id] = new_dock
+                self.dock_widgets[tab_key] = new_dock
+                new_dock.set_link_group_display(self.widget_link_groups.get(tab_key))
+
+            # Close source dock if it's now empty
+            if source_dock.is_empty():
+                source_dock.close()
+
+            # Refresh link group display
+            if zone == 'merge':
+                target_dock.set_link_group_display(self.widget_link_groups.get(tab_key))
+
+        except Exception as e:
+            print(f"Error in handle_zone_drop_on_dock: {e}")
+            import traceback
+            traceback.print_exc()
+
+    def dragEnterEvent(self, event):
+        """Handle drag entering main window for tab drops in empty space"""
+        if event.mimeData().hasFormat("application/x-mira-tab"):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event):
+        """Handle drag moving over main window"""
+        if event.mimeData().hasFormat("application/x-mira-tab"):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dropEvent(self, event):
+        """Handle tab dropped in empty space - create new dock at drop position"""
+        mime_data = event.mimeData()
+        if not mime_data.hasFormat("application/x-mira-tab"):
+            event.ignore()
+            return
+
+        try:
+            # Parse the dropped tab data
+            data = mime_data.data("application/x-mira-tab").data().decode()
+            source_dock_id, tab_key = data.split("|", 1)
+
+            source_dock = self.dock_by_id.get(source_dock_id)
+            if not source_dock or source_dock.isHidden():
+                event.ignore()
+                return
+
+            # Safety check: ensure source dock is still valid
+            if source_dock.tab_bar.count() == 0:
+                event.ignore()
+                return
+
+            # Check if this is the last tab in the source dock
+            if source_dock.tab_bar.count() == 1:
+                # Last tab - move the whole dock instead of creating a new one
+                # Determine which dock area the drop position is closest to
+                drop_pos = event.position().toPoint()
+                area = self._get_dock_area_for_position(drop_pos)
+
+                # If dock is already floating, just move it
+                if source_dock.isFloating():
+                    source_dock.move(drop_pos)
+                else:
+                    # Make it float at the drop position
+                    source_dock.setFloating(True)
+                    # Position it at the drop location
+                    global_pos = self.mapToGlobal(drop_pos)
+                    source_dock.move(global_pos)
+            else:
+                # Not the last tab - create a new dock with this tab
+                # Take the tab from source dock
+                widget = source_dock.take_tab(tab_key)
+                if not widget:
+                    event.ignore()
+                    return
+
+                # Create new dock with the tab
+                drop_pos = event.position().toPoint()
+                area = self._get_dock_area_for_position(drop_pos)
+
+                # Create the new dock
+                new_dock = self.ensure_widget_in_area(tab_key, widget, area)
+
+                if new_dock:
+                    # Update tracking
+                    self.dock_widgets[tab_key] = new_dock
+                    new_dock.set_link_group_display(self.widget_link_groups.get(tab_key))
+
+            event.acceptProposedAction()
+
+        except Exception as e:
+            # Catch any errors during drop to prevent crashes
+            print(f"Error handling tab drop: {e}")
+            event.ignore()
+
+    def _get_dock_area_for_position(self, pos):
+        """Determine which dock area a position is closest to"""
+        rect = self.rect()
+        center_x = rect.width() / 2
+        center_y = rect.height() / 2
+
+        # Simple quadrant-based detection
+        if pos.x() < center_x / 2:
+            return Qt.DockWidgetArea.LeftDockWidgetArea
+        elif pos.x() > rect.width() - center_x / 2:
+            return Qt.DockWidgetArea.RightDockWidgetArea
+        elif pos.y() < center_y / 2:
+            return Qt.DockWidgetArea.TopDockWidgetArea
+        elif pos.y() > rect.height() - center_y / 2:
+            return Qt.DockWidgetArea.BottomDockWidgetArea
+        else:
+            # Center - default to right
+            return Qt.DockWidgetArea.RightDockWidgetArea
+
+    def ensure_widget_in_area(self, key: str, widget: QWidget, area: Qt.DockWidgetArea) -> WorkspaceDock | None:
+        """Create a dock with the given widget in the specified area"""
+        dock_id = f"dock_{len(self.dock_by_id)}"
+        dock = WorkspaceDock(
+            dock_id, key, widget, self,
+            link_callback=self.update_widget_link_group,
+            widget_menu_callback=self.show_widget_menu_at
+        )
+        dock.closed.connect(lambda d=dock: self.on_dock_closed(d))
+        dock.collapsed_changed.connect(lambda d, c: self.on_dock_collapsed(d, c))
+        dock.tab_removed.connect(lambda k, d=dock: self.on_dock_tab_removed(d, k))
+        dock.active_tab_changed.connect(lambda k: self.on_active_tab_changed(k))
+
+        self.addDockWidget(area, dock)
+        self.dock_by_id[dock_id] = dock
+        self.dock_widgets[key] = dock
+
+        return dock
 
     def add_widget_tab(self, target_dock: WorkspaceDock, key: str):
         if not target_dock:
@@ -2193,7 +857,13 @@ class TradingTerminal(QMainWindow):
         self.widget_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         self.widget_button.pressed.connect(lambda: setattr(self, 'pending_widget_target_dock', None))
         controls_layout.addWidget(self.widget_button)
-        
+
+        # Workspace switcher button
+        self.workspace_button = self._build_header_button("⊞", "Workspaces")
+        self.workspace_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.create_workspace_menu()
+        controls_layout.addWidget(self.workspace_button)
+
         self.theme_button = self._build_header_button("", "Toggle theme")
         self.theme_button.clicked.connect(self.toggle_theme)
         controls_layout.addWidget(self.theme_button)
@@ -2585,6 +1255,14 @@ class TradingTerminal(QMainWindow):
             border: none;
             padding: {spacing - 6}px {spacing}px;
         }}
+        QMainWindow::separator {{
+            background: {theme['divider']};
+            width: 1px;
+            height: 1px;
+        }}
+        QMainWindow::separator:hover {{
+            background: {theme['accent']};
+        }}
         """
         self.setStyleSheet(stylesheet)
         if self.theme_button:
@@ -2630,7 +1308,7 @@ class TradingTerminal(QMainWindow):
         if self.refresh_button:
             self.refresh_button.setEnabled(True)
         if self.chatbot:
-            self.chatbot.add_bot_message(f"Loaded {ticker}. Ask me about its signals or strategy!")
+            self.chatbot.add_bot_message(f"Loaded {ticker}. Ask me about the terminal features or market data!")
     
     def get_context(self) -> dict:
         """Get current context for chatbot - enhanced with more details."""

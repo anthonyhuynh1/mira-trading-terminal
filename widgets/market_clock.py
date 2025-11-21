@@ -1,10 +1,14 @@
 """
-MarketClock widget for the Trading Terminal.
+Market clock widget displaying time and market status.
+Shows current time in different market timezones with open/closed status.
 """
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QComboBox, QLabel, QSizePolicy
-from PyQt6.QtCore import QTimer
+
 from datetime import datetime, time, timedelta
 from zoneinfo import ZoneInfo
+
+from PyQt6.QtCore import QTimer
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QLabel, QComboBox, QSizePolicy
+
 
 class MarketClockWidget(QWidget):
     """Displays market time and open/closed status with timezone selector."""

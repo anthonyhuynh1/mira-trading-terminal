@@ -1,25 +1,26 @@
 """
-Screener widget for the Trading Terminal.
+Screener widget for searching and filtering stocks.
+Provides watchlist management and quick access to different market setups.
 """
-from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLineEdit,
-                             QPushButton, QListWidget, QLabel, QFrame,
-                             QSizePolicy, QMenu)
-from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QAction
-import strategy
 
-BASE_SPACING = 12
-TOUCH_TARGET = 44
+from PyQt6.QtCore import Qt
+from PyQt6.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame,
+    QLineEdit, QPushButton, QListWidget, QSizePolicy
+)
+
+from core.themes import BASE_SPACING, TOUCH_TARGET
+from core.config import DEFAULT_TICKERS
+
 
 class ScreenerWidget(QWidget):
     """Left sidebar: Stock screener and search."""
-    
-    def __init__(self, ticker_callback, analysis_callback):
+
+    def __init__(self, ticker_callback):
         super().__init__()
         self.ticker_callback = ticker_callback  # Callback when ticker selected
-        self.analysis_callback = analysis_callback # Callback to trigger AI analysis
         self.init_ui()
-    
+
     def init_ui(self):
         layout = QVBoxLayout(self)
         layout.setSpacing(BASE_SPACING)
@@ -36,7 +37,7 @@ class ScreenerWidget(QWidget):
         header_layout.addWidget(title)
         header_layout.addWidget(subtitle)
         layout.addWidget(self.header_frame)
-        
+
         # Search box
         search_layout = QHBoxLayout()
         search_layout.setSpacing(8)
@@ -52,7 +53,7 @@ class ScreenerWidget(QWidget):
         search_layout.addWidget(self.search_input)
         search_layout.addWidget(self.search_btn)
         layout.addLayout(search_layout)
-        
+
         # Quick filters
         filter_row = QHBoxLayout()
         filter_row.setSpacing(8)
@@ -74,32 +75,30 @@ class ScreenerWidget(QWidget):
         self.filter_summary = QLabel("Focus: All setups")
         self.filter_summary.setObjectName("SectionHint")
         layout.addWidget(self.filter_summary)
-        
+
         # Quick scan button
         scan_btn = QPushButton("Scan Universe")
         scan_btn.clicked.connect(self.scan_universe)
         scan_btn.setMinimumHeight(TOUCH_TARGET)
         scan_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         layout.addWidget(scan_btn)
-        
+
         # Ticker list
         self.ticker_list = QListWidget()
-        self.ticker_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self.ticker_list.customContextMenuRequested.connect(self._show_ticker_context_menu)
         self.ticker_list.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.ticker_list.itemClicked.connect(self.on_ticker_selected)
         watchlist_label = QLabel("Watchlist")
         watchlist_label.setObjectName("SectionTitle")
         layout.addWidget(watchlist_label)
         layout.addWidget(self.ticker_list)
-        
+
         # Load default tickers
-        for ticker in strategy.TICKERS:
+        for ticker in DEFAULT_TICKERS:
             self.ticker_list.addItem(ticker)
-        
+
         self.setLayout(layout)
         self.active_filter = "all"
-    
+
     def search_ticker(self):
         """Search and add ticker."""
         ticker = self.search_input.text().strip().upper()
@@ -108,18 +107,18 @@ class ScreenerWidget(QWidget):
             self.ticker_list.setCurrentRow(self.ticker_list.count() - 1)
             self.ticker_callback(ticker)
         self.search_input.clear()
-    
+
     def scan_universe(self):
         """Run scanner on universe."""
         # This would trigger scanner - for now just show message
         self.ticker_list.addItem("Scanning...")
         self.filter_summary.setText("Focus: Running scan...")
-    
+
     def apply_filter(self, label: str, key: str):
         """Update selected filter badge."""
         self.active_filter = key
         self.filter_summary.setText(f"Focus: {label}")
-    
+
     def on_ticker_selected(self, item):
         """Handle ticker selection."""
         text = item.text().strip()
@@ -127,23 +126,6 @@ class ScreenerWidget(QWidget):
             return
         self.ticker_callback(text)
 
-    def _show_ticker_context_menu(self, position):
-        """Show context menu for ticker list."""
-        item = self.ticker_list.itemAt(position)
-        if not item:
-            return
-        
-        ticker = item.text().strip()
-        
-        menu = QMenu()
-        ai_menu = menu.addMenu("AI Copilot")
-        
-        analyze_action = QAction("Analyze Consolidation Breakout", self)
-        analyze_action.triggered.connect(lambda checked, t=ticker: self.analysis_callback(t))
-        ai_menu.addAction(analyze_action)
-        
-        menu.exec(self.ticker_list.mapToGlobal(position))
-    
     def set_tab_mode(self, tabbed: bool):
         if hasattr(self, "header_frame"):
             self.header_frame.setVisible(not tabbed)

@@ -1,11 +1,45 @@
 """
-Quote widget for the Trading Terminal.
+Quote widget displaying ticker information and statistics.
+Shows current price, change, volume, and 52-week range.
 """
-from PyQt6.QtWidgets import QFrame, QVBoxLayout, QHBoxLayout, QLabel
-from .stat_pill import StatPill
-from ..utils import ideal_text_color
 
-BASE_SPACING = 12
+from PyQt6.QtWidgets import QFrame, QVBoxLayout, QHBoxLayout, QLabel
+
+from core.themes import BASE_SPACING, ideal_text_color
+
+
+class StatPill(QFrame):
+    """Small stat widget used in the hero section."""
+
+    def __init__(self, label: str):
+        super().__init__()
+        self.setObjectName("StatPill")
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(14, 10, 14, 10)
+        layout.setSpacing(2)
+
+        self.label = QLabel(label.upper())
+        self.label.setObjectName("StatLabel")
+        self.value = QLabel("--")
+        self.value.setObjectName("StatValue")
+        self.subtext = QLabel("")
+        self.subtext.setObjectName("StatSubtext")
+
+        layout.addWidget(self.label)
+        layout.addWidget(self.value)
+        layout.addWidget(self.subtext)
+
+    def set_value(self, text: str):
+        self.value.setText(text)
+
+    def set_subtext(self, text: str):
+        self.subtext.setText(text)
+
+    def set_trend(self, trend: str | None):
+        self.setProperty("trend", trend or "")
+        self.style().unpolish(self)
+        self.style().polish(self)
+
 
 class QuoteWidget(QFrame):
     """Headline card showcasing the active ticker and quick controls."""
@@ -15,6 +49,7 @@ class QuoteWidget(QFrame):
         self.interval_callback = interval_callback
         self.setObjectName("QuoteCard")
         self.active_interval = None
+        self.current_ticker = None
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 20, 24, 20)
@@ -88,6 +123,7 @@ class QuoteWidget(QFrame):
 
     def show_loading(self, ticker: str):
         symbol = (ticker or "--").upper()
+        self.current_ticker = symbol
         self.ticker_label.setText(symbol)
         self.subtitle_label.setText("Fetching latest snapshot...")
         self.status_badge.setText("Loading...")
