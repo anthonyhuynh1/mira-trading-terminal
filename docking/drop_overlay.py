@@ -22,7 +22,7 @@ class DropZoneOverlay(QWidget):
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint)
 
         self.current_zone = None  # Which zone cursor is in: 'left', 'right', 'top', 'bottom', or None (center = merge)
-        self.edge_threshold = 0.30  # 30% of width/height for edge zones (slightly larger for easier targeting)
+        self.edge_threshold = 0.15  # 15% of width/height for edge zones (small - merge is default)
 
     def update_cursor_position(self, pos):
         """Update which zone the cursor is in and trigger repaint"""
@@ -73,40 +73,45 @@ class DropZoneOverlay(QWidget):
                 border_color = QColor(0, 0, 0, 102)
 
             if self.current_zone in ['left', 'right', 'top', 'bottom']:
-                # Edge zone - show thin line only
+                # Edge zone - show line AT THE ACTUAL EDGE (not 30% inside)
+                # Detection uses 30% threshold, but visual is on the border
                 pen = QPen(line_color)
-                pen.setWidth(2)
+                pen.setWidth(3)
                 painter.setPen(pen)
 
                 if self.current_zone == 'left':
-                    x = int(rect.width() * self.edge_threshold)
+                    # Draw at LEFT edge (x=0)
+                    x = 2  # Small offset to prevent clipping
                     painter.drawLine(x, 0, x, rect.height())
                     # Subtle glow
-                    painter.setPen(QPen(glow_color, 4))
+                    painter.setPen(QPen(glow_color, 6))
                     painter.drawLine(x, 0, x, rect.height())
 
                 elif self.current_zone == 'right':
-                    x = int(rect.width() * (1 - self.edge_threshold))
-                    painter.setPen(QPen(line_color, 2))
+                    # Draw at RIGHT edge (x=width)
+                    x = rect.width() - 2  # Small offset to prevent clipping
+                    painter.setPen(QPen(line_color, 3))
                     painter.drawLine(x, 0, x, rect.height())
                     # Subtle glow
-                    painter.setPen(QPen(glow_color, 4))
+                    painter.setPen(QPen(glow_color, 6))
                     painter.drawLine(x, 0, x, rect.height())
 
                 elif self.current_zone == 'top':
-                    y = int(rect.height() * self.edge_threshold)
-                    painter.setPen(QPen(line_color, 2))
+                    # Draw at TOP edge (y=0)
+                    y = 2  # Small offset to prevent clipping
+                    painter.setPen(QPen(line_color, 3))
                     painter.drawLine(0, y, rect.width(), y)
                     # Subtle glow
-                    painter.setPen(QPen(glow_color, 4))
+                    painter.setPen(QPen(glow_color, 6))
                     painter.drawLine(0, y, rect.width(), y)
 
                 elif self.current_zone == 'bottom':
-                    y = int(rect.height() * (1 - self.edge_threshold))
-                    painter.setPen(QPen(line_color, 2))
+                    # Draw at BOTTOM edge (y=height)
+                    y = rect.height() - 2  # Small offset to prevent clipping
+                    painter.setPen(QPen(line_color, 3))
                     painter.drawLine(0, y, rect.width(), y)
                     # Subtle glow
-                    painter.setPen(QPen(glow_color, 4))
+                    painter.setPen(QPen(glow_color, 6))
                     painter.drawLine(0, y, rect.width(), y)
 
             elif self.current_zone == 'merge':

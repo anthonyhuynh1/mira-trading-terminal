@@ -188,6 +188,7 @@ class WorkspaceManager:
             Dict mapping preset name to layout builder function
         """
         return {
+            "Webull": WorkspaceManager._create_webull_layout,
             "Bloomberg": WorkspaceManager._create_bloomberg_layout,
             "Trading": WorkspaceManager._create_trading_layout,
             "Research": WorkspaceManager._create_research_layout,
@@ -280,3 +281,80 @@ class WorkspaceManager:
         # Add Copilot as tab in news dock
         if news:
             terminal.add_widget_tab(news, "Copilot")
+
+    @staticmethod
+    def _create_webull_layout(terminal: "TradingTerminal"):
+        """
+        Webull-style 3-column layout: Professional trading terminal look.
+
+        Layout structure:
+        ┌─────────────┬────────────────┬──────────────┐
+        │  SCREENER   │     CHART      │     NEWS     │
+        │   (Left)    │   (Middle)     │   (Right)    │
+        │   ~20%      │     ~50%       │    ~30%      │
+        └─────────────┴────────────────┴──────────────┘
+
+        Key features:
+        - Screener locked to left column (Webull-style)
+        - Large chart in center for analysis
+        - News/secondary info on right
+        - Clean 3-column professional structure
+        """
+        from PyQt6.QtCore import Qt, QTimer
+
+        # Step 1: Create the three main docks
+        screener = terminal.ensure_widget("Screener", Qt.DockWidgetArea.LeftDockWidgetArea)
+        chart = terminal.ensure_widget("Chart", Qt.DockWidgetArea.RightDockWidgetArea)
+        news = terminal.ensure_widget("News", Qt.DockWidgetArea.RightDockWidgetArea)
+
+        if not screener or not chart or not news:
+            print("Warning: Could not create all widgets for Webull layout")
+            return
+
+        # Step 2: Arrange in 3-column structure
+        # Split: Screener | Chart
+        terminal.splitDockWidget(screener, chart, Qt.Orientation.Horizontal)
+
+        # Split: Chart | News (creates the 3rd column)
+        terminal.splitDockWidget(chart, news, Qt.Orientation.Horizontal)
+
+        # Note: Dock registration happens automatically in ensure_widget()
+        # Screener is already marked as immovable, no manual registration needed
+
+        # Step 3: Set proportions after a brief delay (let Qt process the splits)
+        def set_proportions():
+            try:
+                # Get total width
+                total_width = terminal.width()
+
+                # Calculate target widths: 20% | 50% | 30%
+                screener_width = int(total_width * 0.20)
+                chart_width = int(total_width * 0.50)
+                news_width = int(total_width * 0.30)
+
+                # Apply sizes
+                terminal.resizeDocks(
+                    [screener, chart, news],
+                    [screener_width, chart_width, news_width],
+                    Qt.Orientation.Horizontal
+                )
+
+                # Set minimum widths to prevent squishing
+                screener.setMinimumWidth(200)  # Screener needs space for watchlist
+                chart.setMinimumWidth(400)     # Chart needs space to be useful
+                news.setMinimumWidth(250)      # News needs readable width
+
+            except Exception as e:
+                print(f"Could not set Webull layout proportions: {e}")
+
+        # Execute after Qt finishes laying out docks
+        QTimer.singleShot(100, set_proportions)
+
+        # Step 4: Add optional secondary widgets as tabs
+        # Copilot can go in the chart area (middle column)
+        if chart:
+            terminal.add_widget_tab(chart, "Copilot")
+
+        # Fundamentals can go in news area (right column)
+        if news:
+            terminal.add_widget_tab(news, "Fundamentals")

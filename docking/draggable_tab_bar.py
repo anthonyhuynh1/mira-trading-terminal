@@ -1,90 +1,134 @@
 """
-Custom tab bar with smart event handling for dock widgets.
-Supports tab dragging while allowing dock widget dragging from empty space.
+Custom tab bar with drag-and-drop support for moving tabs between docks.
 """
 
-from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtWidgets import QTabBar, QDockWidget
+from PyQt6.QtCore import Qt, QPoint, QMimeData
+from PyQt6.QtGui import QDrag, QCursor
+from PyQt6.QtWidgets import QTabBar, QDockWidget, QApplication
 
 
 class DraggableTabBar(QTabBar):
     """
-    Custom tab bar with smart event handling:
-    - Clicks ON a tab: handle tab selection and dragging
-    - Clicks on EMPTY space: ignore event to allow dock widget dragging
-    """
+    Tab bar that supports dragging tabs to other docks or positions.
 
-    drag_started = pyqtSignal(int, object)  # Emitted when user starts dragging a tab
+    Features:
+    - Click on tab text to drag it
+    - Drag to another dock to merge as tab
+    - Drag to edges to split
+    - Double-click empty space to float dock
+    """
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._drag_start_pos = None  # Starting position for tab drag detection
-        self._drag_tab_index = -1    # Index of tab being dragged (-1 = no drag)
+        self._drag_start_pos = None
+        self._dragging_index = -1
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
-            # Check if click is directly on a tab
+            # Check if click is on a tab
             index = self.tabAt(event.pos())
             if index >= 0:
-                # Click is on a tab - handle tab selection and prepare for tab dragging
+                # Store drag start position and index
                 self._drag_start_pos = event.pos()
-                self._drag_tab_index = index
-                super().mousePressEvent(event)  # Let QTabBar handle tab selection
+                self._dragging_index = index
+                # Let QTabBar handle tab selection
+                super().mousePressEvent(event)
             else:
-                # Click is on empty tab bar space - ignore so dock widget can handle dragging
+                # Click on empty space - ignore to allow dock dragging
                 event.ignore()
         else:
             super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
-        if (event.buttons() & Qt.MouseButton.LeftButton) and self._drag_start_pos:
-            # User is dragging and started on a tab
-            dist = (event.pos() - self._drag_start_pos).manhattanLength()
-            if dist > 10 and self._drag_tab_index >= 0:
-                # Drag threshold exceeded - start tab drag operation
-                self.drag_started.emit(self._drag_tab_index, self._drag_start_pos)
-                self._drag_start_pos = None
-                self._drag_tab_index = -1
-                return
+        # Check if we should start a drag
+        if (self._drag_start_pos is not None and
+            self._dragging_index >= 0 and
+            (event.pos() - self._drag_start_pos).manhattanLength() >= QApplication.startDragDistance()):
 
-        # Only propagate move events if we're tracking a tab drag
-        if self._drag_start_pos is not None:
+            # Start drag operation
+            self._start_drag()
+            return
+
+        # Otherwise, let QTabBar handle it
+        if self.tabAt(event.pos()) >= 0:
             super().mouseMoveEvent(event)
         else:
             event.ignore()
 
     def mouseReleaseEvent(self, event):
-        # Reset drag tracking state
-        was_tracking = self._drag_start_pos is not None
+        # Reset drag state
         self._drag_start_pos = None
-        self._drag_tab_index = -1
+        self._dragging_index = -1
 
-        # Only propagate if we were tracking a tab interaction
-        if was_tracking:
+        # Let QTabBar handle release
+        if self.tabAt(event.pos()) >= 0:
             super().mouseReleaseEvent(event)
         else:
             event.ignore()
 
+    def _start_drag(self):
+        """Initiate drag operation for the tab."""
+        if self._dragging_index < 0:
+            return
+
+        # Find parent WorkspaceDock
+        dock = self._find_parent_dock()
+        if not dock:
+            return
+
+        # Get tab key from tab data
+        tab_key = self.tabData(self._dragging_index)
+        if not tab_key:
+            # Fallback to tab text
+            tab_key = self.tabText(self._dragging_index)
+
+        # Create drag object
+        drag = QDrag(self)
+        mime_data = QMimeData()
+
+        # Store dock ID and tab key
+        data = f"{dock.dock_id}|{tab_key}"
+        mime_data.setData("application/x-mira-tab", data.encode())
+        mime_data.setText(tab_key)
+
+        drag.setMimeData(mime_data)
+
+        # Change cursor during drag
+        QApplication.setOverrideCursor(Qt.CursorShape.DragMoveCursor)
+
+        # Execute drag
+        result = drag.exec(Qt.DropAction.MoveAction)
+
+        # Restore cursor
+        QApplication.restoreOverrideCursor()
+
+        # Reset drag state
+        self._drag_start_pos = None
+        self._dragging_index = -1
+
+    def _find_parent_dock(self):
+        """Find the parent WorkspaceDock."""
+        parent = self.parent()
+        while parent:
+            if isinstance(parent, QDockWidget):
+                return parent
+            parent = parent.parent()
+        return None
+
     def mouseDoubleClickEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
-            # Check if double-click is on a tab or empty space
             index = self.tabAt(event.pos())
             if index >= 0:
-                # Double-click on tab - let QTabBar handle it (emits tabBarDoubleClicked)
+                # Double-click on tab - emit signal
                 super().mouseDoubleClickEvent(event)
             else:
-                # Double-click on empty tab bar space - toggle dock floating state
-                # Find parent WorkspaceDock and toggle its floating state
+                # Double-click on empty space - toggle dock floating
                 try:
-                    dock = self.parent()
-                    while dock and not isinstance(dock, QDockWidget):
-                        dock = dock.parent()
-                    # Safety check: ensure dock still exists and is valid
+                    dock = self._find_parent_dock()
                     if dock and not dock.isHidden():
                         dock.setFloating(not dock.isFloating())
                     event.accept()
                 except RuntimeError:
-                    # Dock was deleted - ignore the event
                     event.ignore()
         else:
             super().mouseDoubleClickEvent(event)

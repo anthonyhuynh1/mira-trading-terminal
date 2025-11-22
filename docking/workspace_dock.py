@@ -15,6 +15,7 @@ from PyQt6.QtWidgets import (
 
 from .drop_overlay import DropZoneOverlay
 from .draggable_tab_bar import DraggableTabBar
+from .ticker_sync_header import TickerSyncHeader
 from core.themes import BASE_SPACING
 
 
@@ -32,12 +33,13 @@ class WorkspaceDock(QDockWidget):
                  widget_menu_callback: Callable[[object, QWidget | None], None] | None = None):
         super().__init__(initial_key, parent)
         self.dock_id = dock_id
+        self.initial_widget_key = initial_key  # Store for use in title bar setup
         self.setObjectName(dock_id)
         self.setContentsMargins(0, 0, 0, 0)
         self.setAllowedAreas(Qt.DockWidgetArea.AllDockWidgetAreas)
         self.setFeatures(
             QDockWidget.DockWidgetFeature.DockWidgetClosable |
-            QDockWidget.DockWidgetFeature.DockWidgetMovable |
+            QDockWidget.DockWidgetFeature.DockWidgetMovable |  # Qt's simple title bar dragging
             QDockWidget.DockWidgetFeature.DockWidgetFloatable
         )
         self.collapsed = False
@@ -49,16 +51,10 @@ class WorkspaceDock(QDockWidget):
         self.tab_widgets: dict[str, QWidget] = {}
         self.tab_order: list[str] = []
 
-        # Drag-and-drop state
-        self._drag_start_pos = None
-        self._dragging_tab_index = -1
-        self._drop_highlight_active = False
-
-        # Enable drop handling on the dock widget itself
-        self.setAcceptDrops(True)
-
-        # Create drop zone overlay (hidden by default)
-        self._drop_overlay = None  # Created lazily on first drag
+        # Initialize drag-and-drop state variables
+        self._drop_overlay: DropZoneOverlay | None = None
+        self._drop_highlight_active: bool = False
+        self._dragging_tab_index: int = -1
 
         self._init_title_bar()
         self._init_body()
@@ -67,7 +63,6 @@ class WorkspaceDock(QDockWidget):
     def _init_title_bar(self):
         title_bar = QWidget()
         title_bar.setObjectName("DockTitleBar")
-        title_bar.setAcceptDrops(True)
         layout = QHBoxLayout(title_bar)
         layout.setContentsMargins(12, 6, 8, 6)
         layout.setSpacing(6)
@@ -76,6 +71,12 @@ class WorkspaceDock(QDockWidget):
         self.title_label.setObjectName("DockTitleLabel")
         self.title_label.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Preferred)
         layout.addWidget(self.title_label)
+
+        # Add ticker sync header (shows ticker with chain/pin icon)
+        self.ticker_sync_header = TickerSyncHeader(self.initial_widget_key)
+        self.ticker_sync_header.ticker_changed.connect(self._on_ticker_changed_from_header)
+        self.ticker_sync_header.sync_toggled.connect(self._on_sync_toggled_from_header)
+        layout.addWidget(self.ticker_sync_header)
 
         self.tab_bar = DraggableTabBar()
         self.tab_bar.setObjectName("DockTabBar")
@@ -86,14 +87,7 @@ class WorkspaceDock(QDockWidget):
         self.tab_bar.currentChanged.connect(self._on_tab_changed)
         self.tab_bar.tabMoved.connect(self._on_tab_moved)
         self.tab_bar.tabBarDoubleClicked.connect(self._on_tab_double_clicked)
-        self.tab_bar.drag_started.connect(self._on_drag_started)
-
-        # Enable drag-and-drop for tabs
-        self.tab_bar.setAcceptDrops(True)
-        self.tab_bar.installEventFilter(self)
-
-        # Enable mouse tracking for better event handling
-        self.tab_bar.setMouseTracking(True)
+        # Removed custom drag handling - using Qt's built-in system
 
         layout.addWidget(self.tab_bar, stretch=1)
 
@@ -109,7 +103,8 @@ class WorkspaceDock(QDockWidget):
             layout.addWidget(btn)
 
         self.setTitleBarWidget(title_bar)
-        title_bar.installEventFilter(self)
+        # Removed event filter - Qt handles all dragging now
+        title_bar.installEventFilter(self)  # Keep for context menu only
         self._rebuild_options_menu()
 
     def _init_body(self):
@@ -233,6 +228,22 @@ class WorkspaceDock(QDockWidget):
             self.link_callback(current_key, group)
         self._link_group = group
         self._rebuild_options_menu()
+        # Update ticker sync header
+        if hasattr(self, 'ticker_sync_header'):
+            self.ticker_sync_header.set_link_group(group)
+
+    def _on_ticker_changed_from_header(self, ticker: str):
+        """Handle ticker change from ticker sync header."""
+        # Get the current tab's widget and update it
+        current_key = self.current_tab_key()
+        if current_key:
+            widget = self.tab_widgets.get(current_key)
+            if widget and hasattr(widget, 'load_ticker'):
+                widget.load_ticker(ticker)
+
+    def _on_sync_toggled_from_header(self, group: int | None):
+        """Handle sync toggle from ticker sync header."""
+        self._set_link_group(group)
 
     def add_tab(self, key: str, widget: QWidget, title: str):
         if key in self.tab_widgets:
@@ -466,6 +477,7 @@ class WorkspaceDock(QDockWidget):
     def _handle_zone_drop(self, event, zone):
         """Handle drop in a specific zone - split or merge based on zone"""
         mime_data = event.mimeData()
+
         if not mime_data.hasFormat("application/x-mira-tab"):
             event.ignore()
             return
@@ -595,12 +607,12 @@ class WorkspaceDock(QDockWidget):
         QApplication.restoreOverrideCursor()
 
         # Reset drag state
-        self._drag_start_pos = None
         self._dragging_tab_index = -1
 
     def _handle_tab_drop(self, event):
-        """Handle a tab being dropped onto this dock"""
+        """Handle a tab being dropped onto this dock (merge as new tab)"""
         mime_data = event.mimeData()
+
         if not mime_data.hasFormat("application/x-mira-tab"):
             return
 
@@ -611,7 +623,7 @@ class WorkspaceDock(QDockWidget):
         if source_dock_id == self.dock_id:
             return
 
-        # Find the main window and merge the tabs
+        # Find the main window and merge the tab
         main_window = self.window()
         if hasattr(main_window, "merge_dock_tabs"):
             main_window.merge_dock_tabs(source_dock_id, tab_key, self.dock_id)
@@ -621,12 +633,21 @@ class WorkspaceDock(QDockWidget):
         self._link_group = group
         self._update_title_label()
         self._rebuild_options_menu()
+        # Update ticker sync header
+        if hasattr(self, 'ticker_sync_header'):
+            self.ticker_sync_header.set_link_group(group)
 
     def _update_title_label(self):
         if not hasattr(self, "title_label"):
             return
-        # Always hide title label - tabs show the widget names
-        self.title_label.setVisible(False)
+        # Check if widget is still valid (not deleted)
+        try:
+            if self.title_label:
+                # Always hide title label - tabs show the widget names
+                self.title_label.setVisible(False)
+        except RuntimeError:
+            # Widget was deleted, ignore
+            return
         # Update window title for Qt's dock system
         text = self.current_tab_key() or ""
         if self._link_group:

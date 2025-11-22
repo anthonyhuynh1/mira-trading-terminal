@@ -19,9 +19,9 @@ os.environ.setdefault("QTWEBENGINE_CHROMIUM_FLAGS", "--disable-gpu")
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QDockWidget, QSizePolicy, QFrame, QToolButton, QMenu,
-    QToolBar, QTabWidget, QStyle
+    QToolBar, QTabWidget, QStyle, QGraphicsOpacityEffect
 )
-from PyQt6.QtCore import Qt, QTimer, QSize
+from PyQt6.QtCore import Qt, QTimer, QSize, QPropertyAnimation, QEasingCurve
 from PyQt6.QtGui import QAction, QIcon, QCursor
 
 # Import our custom modules
@@ -30,8 +30,10 @@ from core.themes import (
     ticker_hash_color, soften_color, mix_colors
 )
 from core.data_provider import TickerDataProvider, SnapshotWorker
+from core.stock_page_manager import StockPageManager
 from docking.workspace_dock import WorkspaceDock
 from layout.workspace_manager import WorkspaceManager
+from ui.page_tab_bar import PageTabBar
 from widgets.quotes import QuoteWidget
 from widgets.market_clock import MarketClockWidget
 from widgets.chart import ChartWidget
@@ -72,6 +74,8 @@ class TradingTerminal(QMainWindow):
         self.dock_by_id: Dict[str, WorkspaceDock] = {}
         self.pending_widget_target_dock: WorkspaceDock | None = None
         self.data_provider = TickerDataProvider()
+        self.page_manager = StockPageManager(self)
+        self.page_tab_bar = PageTabBar(self.page_manager, self.data_provider, self)
 
         # Workspace management - save/load layouts
         # Directory will be user-specific once authentication is added
@@ -111,8 +115,30 @@ class TradingTerminal(QMainWindow):
         self.setAcceptDrops(True)
 
         header = self.create_header()
-        self.setMenuWidget(header)
+        
+        # Create a container for the header and tab bar
+        menu_container = QWidget()
+        menu_container.setObjectName("MenuContainer")
+        menu_layout = QVBoxLayout(menu_container)
+        menu_layout.setContentsMargins(0, 0, 0, 0)
+        menu_layout.setSpacing(4)
+        menu_layout.addWidget(header)
+        menu_layout.addWidget(self.page_tab_bar)
+
+        # Add spacer to prevent dock overlap
+        spacer = QWidget()
+        spacer.setFixedHeight(8)
+        spacer.setObjectName("TabBarSpacer")
+        menu_layout.addWidget(spacer)
+
+        self.setMenuWidget(menu_container)
         self.setup_stow_bar()
+
+        # Connect tab bar signals
+        self.page_tab_bar.add_tab_requested.connect(self._on_add_tab_requested)
+        self.page_tab_bar.close_tab_requested.connect(self._on_close_tab_requested)
+        self.page_tab_bar.tab_changed.connect(self._on_tab_changed)
+        self.page_manager.active_page_changed.connect(self._on_active_page_changed)
 
         self.widget_factories = {
             "Quotes": lambda: QuoteWidget(self.handle_interval_change),
@@ -258,30 +284,24 @@ class TradingTerminal(QMainWindow):
     def create_default_layout(self):
         """Create a simple, flexible starting layout"""
 
-        # Start with just the main widgets in simple areas
-        # Let Qt handle the initial positioning, then customize
+        # Screener on the left side.
+        screener_dock = self.ensure_widget("Screener", Qt.DockWidgetArea.LeftDockWidgetArea)
 
-        # Main chart - center focus
-        chart = self.ensure_widget("Chart", Qt.DockWidgetArea.RightDockWidgetArea)
+        # Main content dock on the right, starting with the Chart.
+        main_dock = self.ensure_widget("Chart", Qt.DockWidgetArea.RightDockWidgetArea)
 
-        # Screener - left side for stock selection
-        screener = self.ensure_widget("Screener", Qt.DockWidgetArea.LeftDockWidgetArea)
+        # Add other important widgets as tabs to the main dock.
+        if main_dock:
+            self.add_widget_tab(main_dock, "Quotes")
+            self.add_widget_tab(main_dock, "Fundamentals")
+            self.add_widget_tab(main_dock, "News")
+            self.add_widget_tab(main_dock, "Copilot")
 
-        # Quotes - minimal, can be top or tabbed
-        quotes = self.ensure_widget("Quotes", Qt.DockWidgetArea.TopDockWidgetArea)
-
-        # Fundamentals - bottom area
-        fundamentals = self.ensure_widget("Fundamentals", Qt.DockWidgetArea.BottomDockWidgetArea)
-
-        # Simple horizontal split: Screener | Chart
-        if screener and chart:
-            self.splitDockWidget(screener, chart, Qt.Orientation.Horizontal)
-
-        # Add secondary widgets as tabs (cleaner starting point)
-        if fundamentals:
-            self.add_widget_tab(fundamentals, "News")
-        if chart:
-            self.add_widget_tab(chart, "Copilot")
+        # Split the screener and the main content area.
+        if screener_dock and main_dock:
+            self.splitDockWidget(screener_dock, main_dock, Qt.Orientation.Horizontal)
+            # Give more space to the main content
+            self.resizeDocks([screener_dock, main_dock], [350, 1250], Qt.Orientation.Horizontal)
 
     def show_widget_menu_at(self, dock: WorkspaceDock | None, anchor: QWidget | None):
         if not hasattr(self, "widget_menu") or not self.widget_menu:
@@ -901,6 +921,9 @@ class TradingTerminal(QMainWindow):
         QWidget#Workspace {{
             background-color: {theme['window_bg']};
         }}
+        QWidget#MenuContainer {{
+            background-color: {theme['window_bg']};
+        }}
         QWidget {{
             background-color: {theme['panel_bg']};
             color: {theme['text']};
@@ -1276,6 +1299,7 @@ class TradingTerminal(QMainWindow):
             self.chart_widget.refresh_theme()
             if self.quote_widget:
                 self.quote_widget.set_active_interval(self.chart_widget.current_interval)
+        self.page_tab_bar.apply_theme(self.current_theme_name)
     
     def toggle_theme(self):
         self.current_theme_name = "light" if self.current_theme_name == "dark" else "dark"
@@ -1284,6 +1308,13 @@ class TradingTerminal(QMainWindow):
     def on_ticker_selected(self, ticker: str):
         """Handle ticker selection."""
         self.current_ticker = ticker
+
+        active_page = self.page_manager.active_page
+        if active_page:
+            active_page.primary_ticker = ticker
+            active_page.page_name = ticker
+            self.page_tab_bar.update_page_name(active_page.page_id, ticker)
+
         self.update_brand_accent(ticker)
         self.load_widget_ticker("Quotes", ticker, propagate=True)
         # Ensure critical widgets exist (will show existing or create new)
@@ -1320,6 +1351,112 @@ class TradingTerminal(QMainWindow):
             "view": "main_chart",
             "theme": self.current_theme_name
         }
+
+    # --- Tab Management ---
+    def _on_add_tab_requested(self):
+        ticker = self.current_ticker or "SPY"
+        page = self.page_manager.create_page(name=ticker, ticker=ticker, activate=True)
+        self.page_tab_bar.update_page_name(page.page_id, ticker)
+
+    def _on_close_tab_requested(self, page_id: str):
+        self.page_manager.remove_page(page_id)
+
+    def _on_tab_changed(self, page_id: str):
+        self.page_manager.set_active_page(page_id)
+
+    def _on_active_page_changed(self, page_id: str):
+        """Switch to a different page - save current state and restore new page state"""
+        if not page_id:
+            return
+
+        # Save current page state before switching
+        if hasattr(self, '_last_active_page_id') and self._last_active_page_id:
+            self._save_page_state(self._last_active_page_id)
+
+        # Get the new page
+        page = self.page_manager.get_page_by_id(page_id)
+        if not page:
+            return
+
+        # Restore the new page's state
+        self._restore_page_state(page_id)
+
+        # Update ticker
+        self.on_ticker_selected(page.primary_ticker)
+        self.page_tab_bar.update_page_name(page.page_id, page.primary_ticker)
+
+        # Remember this as the last active page
+        self._last_active_page_id = page_id
+
+    def _save_page_state(self, page_id: str):
+        """Save current dock layout and widget visibility to a page"""
+        page = self.page_manager.get_page_by_id(page_id)
+        if not page:
+            return
+
+        # Save QMainWindow state (dock positions, sizes, etc.)
+        page.layout_state = self.saveState()
+
+        # Save which widgets are currently visible
+        page.visible_widgets = set()
+        for widget_key, dock in self.dock_widgets.items():
+            if dock and not dock.isHidden():
+                page.visible_widgets.add(widget_key)
+
+        # Save dock geometry
+        page.dock_geometry = {}
+        for dock_id, dock in self.dock_by_id.items():
+            if dock:
+                page.dock_geometry[dock_id] = dock.saveGeometry()
+
+    def _restore_page_state(self, page_id: str):
+        """Restore dock layout and widget visibility from a page"""
+        page = self.page_manager.get_page_by_id(page_id)
+        if not page:
+            return
+
+        # Subtle fade effect for page transitions
+        self._animate_page_transition()
+
+            # If this page has a saved layout, restore it
+            if False and page.layout_state: # Temporarily disable loading saved state
+                self.restoreState(page.layout_state)
+        
+                # Restore dock geometries
+                for dock_id, geometry in page.dock_geometry.items():
+                    dock = self.dock_by_id.get(dock_id)
+                    if dock:
+                        dock.restoreGeometry(geometry)
+            else:
+                # First time viewing this page - create default layout
+                # Hide all current docks
+                for dock in self.dock_by_id.values():
+                    dock.hide()
+        
+                # Create a clean default layout for this page
+                self.create_default_layout()
+        
+                # Save this as the initial state
+                page.layout_state = self.saveState()
+                page.visible_widgets = set(self.dock_widgets.keys())
+    def _animate_page_transition(self):
+        """Subtle fade animation when switching pages"""
+        # Create opacity effect if it doesn't exist
+        if not hasattr(self, '_page_opacity_effect'):
+            self._page_opacity_effect = QGraphicsOpacityEffect(self)
+            self.centralWidget().setGraphicsEffect(self._page_opacity_effect)
+
+        # Quick fade out and in
+        if hasattr(self, '_page_anim'):
+            self._page_anim.stop()
+
+        self._page_anim = QPropertyAnimation(self._page_opacity_effect, b"opacity")
+        self._page_anim.setDuration(150)  # 150ms - very subtle
+        self._page_anim.setStartValue(1.0)
+        self._page_anim.setKeyValueAt(0.5, 0.85)  # Slight fade
+        self._page_anim.setEndValue(1.0)
+        self._page_anim.setEasingCurve(QEasingCurve.Type.InOutQuad)
+        self._page_anim.start()
 
 
 def main():
