@@ -114,24 +114,9 @@ class TradingTerminal(QMainWindow):
         # Enable drag-and-drop for tabs onto the main window (empty space drops)
         self.setAcceptDrops(True)
 
-        header = self.create_header()
-        
-        # Create a container for the header and tab bar
-        menu_container = QWidget()
-        menu_container.setObjectName("MenuContainer")
-        menu_layout = QVBoxLayout(menu_container)
-        menu_layout.setContentsMargins(0, 0, 0, 0)
-        menu_layout.setSpacing(4)
-        menu_layout.addWidget(header)
-        menu_layout.addWidget(self.page_tab_bar)
-
-        # Add spacer to prevent dock overlap
-        spacer = QWidget()
-        spacer.setFixedHeight(8)
-        spacer.setObjectName("TabBarSpacer")
-        menu_layout.addWidget(spacer)
-
-        self.setMenuWidget(menu_container)
+        # Unified header+tabs in menu area
+        unified_header = self.create_integrated_header()
+        self.setMenuWidget(unified_header)
         self.setup_stow_bar()
 
         # Connect tab bar signals
@@ -839,6 +824,75 @@ class TradingTerminal(QMainWindow):
         btn.setFixedSize(QSize(36, 36))
         return btn
     
+    def create_integrated_header(self):
+        """Create unified header+tab component."""
+        container = QWidget()
+        container.setObjectName("HeaderContainer")
+
+        # Single frame for both header and tabs
+        unified = QFrame()
+        unified.setObjectName("UnifiedHeader")
+
+        layout = QVBoxLayout(unified)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        # Header content
+        header_content = self.create_header_content()
+        layout.addWidget(header_content)
+
+        # Tabs integrated at bottom
+        layout.addWidget(self.page_tab_bar)
+
+        container_layout = QVBoxLayout(container)
+        container_layout.setContentsMargins(0, 0, 0, 0)
+        container_layout.setSpacing(0)
+        container_layout.addWidget(unified)
+
+        return container
+
+    def create_header_content(self):
+        """Create header content without wrapper."""
+        widget = QWidget()
+        widget.setObjectName("HeaderContent")
+        layout = QHBoxLayout(widget)
+        layout.setContentsMargins(24, 16, 24, 16)
+
+        title = QLabel("Mira")
+        title.setObjectName("HeaderTitle")
+        subtitle = QLabel("Adaptive Trading Workspace")
+        subtitle.setObjectName("HeaderSubtitle")
+        title_block = QVBoxLayout()
+        title_block.setSpacing(2)
+        title_block.addWidget(title)
+        title_block.addWidget(subtitle)
+        layout.addLayout(title_block)
+
+        layout.addSpacing(24)
+
+        self.market_clock = MarketClockWidget()
+        self.market_clock.setFixedWidth(220)
+        layout.addWidget(self.market_clock)
+
+        layout.addStretch()
+
+        controls_container = QWidget()
+        controls_container.setObjectName("HeaderControls")
+        controls_layout = QHBoxLayout(controls_container)
+        controls_layout.setContentsMargins(0, 0, 0, 0)
+        controls_layout.setSpacing(4)
+
+        # Simple placeholder buttons for now
+        for icon in ["↻", "+", "⋮", "⚙"]:
+            btn = QToolButton()
+            btn.setText(icon)
+            btn.setFixedSize(36, 36)
+            btn.setObjectName("DockIconButton")
+            controls_layout.addWidget(btn)
+
+        layout.addWidget(controls_container)
+        return widget
+
     def create_header(self):
         header = QFrame()
         header.setObjectName("Header")
@@ -911,7 +965,18 @@ class TradingTerminal(QMainWindow):
         spacing = BASE_SPACING
         touch = TOUCH_TARGET
         quote_gradient = theme['surface']
-        card_radius = 0
+        card_radius = 8
+
+        # Prominent borders for high contrast
+        if self.current_theme_name == "dark":
+            strong_border = "#404040"  # Visible separator
+            subtle_border = "#2a2a2a"  # Gentle division
+            accent_color = "#00d4ff"  # Mira cyan
+        else:
+            strong_border = "#c0c0c0"
+            subtle_border = "#e0e0e0"
+            accent_color = "#0066ff"
+
         stylesheet = f"""
         QMainWindow {{
             background-color: {theme['window_bg']};
@@ -923,6 +988,8 @@ class TradingTerminal(QMainWindow):
         }}
         QWidget#MenuContainer {{
             background-color: {theme['window_bg']};
+            padding: 0px;
+            margin: 0px;
         }}
         QWidget {{
             background-color: {theme['panel_bg']};
@@ -937,10 +1004,20 @@ class TradingTerminal(QMainWindow):
             font-size: 13px;
             font-weight: 500;
         }}
+        QFrame#UnifiedHeader {{
+            background-color: {theme['surface']};
+            border: none;
+            border-bottom: 1px solid {strong_border};
+        }}
+        QWidget#HeaderContent {{
+            background-color: transparent;
+        }}
         QFrame#Header {{
             background-color: {theme['surface']};
-            border: 1px solid {theme['divider']};
-            border-radius: {card_radius}px;
+            border: none;
+            border-radius: 0px;
+            padding: 16px 24px;
+            margin: 0px;
         }}
         QLabel#HeaderTitle {{
             color: {theme['text']};
@@ -1011,7 +1088,7 @@ class TradingTerminal(QMainWindow):
             background-color: {theme['surface']};
             border: 1px solid {theme['divider']};
             padding: {spacing - 4}px;
-            border-radius: {card_radius}px;
+            border-radius: 0px;
         }}
         QListWidget::item {{
             padding: 6px;
@@ -1028,7 +1105,7 @@ class TradingTerminal(QMainWindow):
         QFrame#StatPill {{
             background-color: {theme['surface']};
             border: 1px solid {theme['divider']};
-            border-radius: {card_radius}px;
+            border-radius: 0px;
         }}
         QLabel#StatLabel {{
             color: {theme['muted']};
@@ -1053,7 +1130,7 @@ class TradingTerminal(QMainWindow):
         QDockWidget {{
             background-color: {theme['panel_bg']};
             border: 1px solid {theme['divider']};
-            border-radius: {card_radius}px;
+            border-radius: 0px;
         }}
         QWidget#DockTitleBar {{
             background-color: {theme['tab_bg']};
@@ -1102,7 +1179,7 @@ class TradingTerminal(QMainWindow):
         }}
         QFrame#DockBody {{
             border: 1px solid {theme['divider']};
-            border-radius: {card_radius}px;
+            border-radius: 0px;
             background-color: {theme['panel_bg']};
         }}
         QToolButton#DockButton, QToolButton#DockIconButton {{
@@ -1223,15 +1300,19 @@ class TradingTerminal(QMainWindow):
         }}
         QToolButton#UtilityIconButton {{
             background-color: transparent;
-            border: 1px solid {theme['text']};
-            border-radius: 6px;
+            border: 2px solid {strong_border};
+            border-radius: 8px;
             padding: 0;
             color: {theme['text']};
         }}
         QToolButton#UtilityIconButton:hover {{
-            background-color: {theme['accent']};
-            color: {theme['button_text']};
-            border-color: {theme['accent']};
+            background-color: {theme['surface_alt']};
+            color: {theme['text']};
+            border-color: {strong_border};
+        }}
+        QToolButton#UtilityIconButton:pressed {{
+            background-color: {theme['accent_hover']};
+            border-color: {accent_color};
         }}
         QPushButton#ToggleButton {{
             background-color: transparent;
@@ -1279,12 +1360,14 @@ class TradingTerminal(QMainWindow):
             padding: {spacing - 6}px {spacing}px;
         }}
         QMainWindow::separator {{
-            background: {theme['divider']};
-            width: 1px;
-            height: 1px;
+            background: {strong_border};
+            width: 2px;
+            height: 2px;
         }}
         QMainWindow::separator:hover {{
-            background: {theme['accent']};
+            background: {accent_color};
+            width: 3px;
+            height: 3px;
         }}
         """
         self.setStyleSheet(stylesheet)
@@ -1418,27 +1501,27 @@ class TradingTerminal(QMainWindow):
         # Subtle fade effect for page transitions
         self._animate_page_transition()
 
-            # If this page has a saved layout, restore it
-            if False and page.layout_state: # Temporarily disable loading saved state
-                self.restoreState(page.layout_state)
-        
-                # Restore dock geometries
-                for dock_id, geometry in page.dock_geometry.items():
-                    dock = self.dock_by_id.get(dock_id)
-                    if dock:
-                        dock.restoreGeometry(geometry)
-            else:
-                # First time viewing this page - create default layout
-                # Hide all current docks
-                for dock in self.dock_by_id.values():
-                    dock.hide()
-        
-                # Create a clean default layout for this page
-                self.create_default_layout()
-        
-                # Save this as the initial state
-                page.layout_state = self.saveState()
-                page.visible_widgets = set(self.dock_widgets.keys())
+        # If this page has a saved layout, restore it
+        if False and page.layout_state: # Temporarily disable loading saved state
+            self.restoreState(page.layout_state)
+
+            # Restore dock geometries
+            for dock_id, geometry in page.dock_geometry.items():
+                dock = self.dock_by_id.get(dock_id)
+                if dock:
+                    dock.restoreGeometry(geometry)
+        else:
+            # First time viewing this page - create default layout
+            # Hide all current docks
+            for dock in self.dock_by_id.values():
+                dock.hide()
+
+            # Create a clean default layout for this page
+            self.create_default_layout()
+
+            # Save this as the initial state
+            page.layout_state = self.saveState()
+            page.visible_widgets = set(self.dock_widgets.keys())
     def _animate_page_transition(self):
         """Subtle fade animation when switching pages"""
         # Create opacity effect if it doesn't exist

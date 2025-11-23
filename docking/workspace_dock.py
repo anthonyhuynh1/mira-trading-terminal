@@ -5,7 +5,7 @@ Provides the core docking functionality for the trading terminal.
 
 from typing import Callable
 
-from PyQt6.QtCore import Qt, pyqtSignal, QEvent, QTimer, QMimeData, QSize
+from PyQt6.QtCore import Qt, pyqtSignal, QEvent, QTimer, QMimeData, QSize, QPoint
 from PyQt6.QtGui import QDrag
 from PyQt6.QtWidgets import (
     QDockWidget, QWidget, QMainWindow, QHBoxLayout, QVBoxLayout,
@@ -70,6 +70,8 @@ class WorkspaceDock(QDockWidget):
         self.title_label = QLabel("")
         self.title_label.setObjectName("DockTitleLabel")
         self.title_label.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Preferred)
+        self.title_label.setCursor(Qt.CursorShape.OpenHandCursor)  # Show it's draggable
+        self.title_label.installEventFilter(self)  # Enable drag handling
         layout.addWidget(self.title_label)
 
         # Add ticker sync header (shows ticker with chain/pin icon)
@@ -257,7 +259,7 @@ class WorkspaceDock(QDockWidget):
         self.tab_order.insert(tab_index, key)
         self.tab_bar.setCurrentIndex(tab_index)
         self.tab_added.emit(key)
-        self._update_title_label()
+        self._update_title_label()  # This will now show/hide tab bar as needed
 
     def take_tab(self, key: str) -> QWidget | None:
         idx = self._index_for_key(key)
@@ -507,6 +509,22 @@ class WorkspaceDock(QDockWidget):
         return title_bar.rect().contains(title_pos)
 
     def eventFilter(self, obj, event):
+        # Handle title label dragging when it's visible (single tab mode)
+        if hasattr(self, 'title_label') and obj is self.title_label and self.title_label.isVisible() and len(self.tab_order) == 1:
+            if event.type() == QEvent.Type.MouseButtonPress:
+                if event.button() == Qt.MouseButton.LeftButton:
+                    self._drag_start_pos = event.pos()
+                    return False
+            elif event.type() == QEvent.Type.MouseMove:
+                if event.buttons() & Qt.MouseButton.LeftButton:
+                    if hasattr(self, '_drag_start_pos'):
+                        if (event.pos() - self._drag_start_pos).manhattanLength() > QApplication.startDragDistance():
+                            # Start drag for the single widget
+                            self._dragging_tab_index = 0  # Single tab at index 0
+                            self._start_tab_drag()
+                            return True
+                return False
+
         if obj is self.titleBarWidget():
             # Right-click to show context menu
             if event.type() == QEvent.Type.ContextMenu:
@@ -534,7 +552,7 @@ class WorkspaceDock(QDockWidget):
             return False
 
         # Handle tab bar events
-        if obj is self.tab_bar:
+        if hasattr(self, 'tab_bar') and obj is self.tab_bar:
             # Drag detection is now handled by custom DraggableTabBar
             # Only handle drop events here
             if event.type() == QEvent.Type.DragEnter:
@@ -638,13 +656,28 @@ class WorkspaceDock(QDockWidget):
             self.ticker_sync_header.set_link_group(group)
 
     def _update_title_label(self):
-        if not hasattr(self, "title_label"):
+        if not hasattr(self, "title_label") or not hasattr(self, "tab_bar"):
             return
         # Check if widget is still valid (not deleted)
         try:
+            # Show title label ONLY when there's a single tab (no tab bar needed)
+            # Hide tab bar when there's only one tab
+            single_tab = len(self.tab_order) <= 1
+
             if self.title_label:
-                # Always hide title label - tabs show the widget names
-                self.title_label.setVisible(False)
+                self.title_label.setVisible(single_tab)
+                if single_tab and self.tab_order:
+                    # Show the single widget's name in the title
+                    self.title_label.setText(self.tab_order[0].upper())
+                    # Show draggable cursor when single tab
+                    self.title_label.setCursor(Qt.CursorShape.OpenHandCursor)
+                else:
+                    self.title_label.setCursor(Qt.CursorShape.ArrowCursor)
+
+            if self.tab_bar:
+                # Hide tab bar when there's only one tab
+                self.tab_bar.setVisible(not single_tab)
+
         except RuntimeError:
             # Widget was deleted, ignore
             return
